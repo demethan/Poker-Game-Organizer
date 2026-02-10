@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>{{ game['title'] }}</h1>
+<p class="game-meta">
+  <span class="game-datetime">🗓️ {{ game['game_date'] }} at {{ game['game_time'] }}</span>
+  <span class="game-location">
+    📍 <a class="map-link" href="https://www.google.com/maps/search/?api=1&query={{ game['location'] | urlencode }}" target="_blank" rel="noopener noreferrer">{{ game['location'] }}</a>
+  </span>
+</p>
+<div class="card">
+  <h3>Players IN</h3>
+  {% if (in_players and in_players|length > 0) or (late_players and late_players|length > 0) %}
+    <div class="row">
+      {% for name in in_players %}
+        <span class="badge">{{ name }}</span>
+      {% endfor %}
+      {% for name in late_players %}
+        <span class="badge">⏰ {{ name }}</span>
+      {% endfor %}
+    </div>
+  {% else %}
+    <p>No one has joined yet.</p>
+  {% endif %}
+</div>
+<div id="alreadyVoted" class="notice notice-strong" style="display:none;">
+  You already responded to this game. You can update your status below.
+</div>
+
+<div class="card">
+  <div class="row" style="align-items:center;">
+    <h3 style="margin:0;">RSVP</h3>
+    <button type="button" class="info-btn" onclick="toggleInfo()" aria-label="Info">i</button>
+  </div>
+  <div id="infoPopup" class="info-popup" style="display:none;">
+    We can’t read your device phone number from the browser. Please enter your info once; it will be remembered on this device.
+  </div>
+  <form method="post" action="/g/{{ game['code'] }}/rsvp" id="rsvpForm" class="grid grid-2">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <div>
+      <label>Name</label>
+      <input type="text" name="name" id="name" required>
+    </div>
+    <div>
+      <label>Cell (optional)</label>
+      <input type="tel" name="phone" id="phone" disabled placeholder="Coming soon">
+    </div>
+    <div id="lateEtaWrap" style="display:none;">
+      <label>ETA (when you'll arrive)</label>
+      <input type="time" name="late_eta" id="late_eta">
+    </div>
+    <input type="hidden" name="status" id="status" value="IN">
+    <div class="row">
+      <button class="btn" type="button" onclick="submitStatus('IN')">IN</button>
+      <button class="btn secondary" type="button" onclick="submitStatus('LATE')">LATE</button>
+      <button class="btn danger" type="button" onclick="submitStatus('OUT')">OUT</button>
+    </div>
+  </form>
+</div>
+
+<script>
+(function() {
+  const nameInput = document.getElementById('name');
+  const savedName = localStorage.getItem('poker_name');
+  if (savedName) nameInput.value = savedName;
+})();
+
+function submitStatus(status) {
+  const nameInput = document.getElementById('name');
+  if (!nameInput.value.trim()) {
+    nameInput.focus();
+    return;
+  }
+  const etaWrap = document.getElementById('lateEtaWrap');
+  const etaInput = document.getElementById('late_eta');
+  if (status === 'LATE') {
+    etaWrap.style.display = 'block';
+    if (!etaInput.value) {
+      etaInput.focus();
+      return;
+    }
+  } else {
+    etaWrap.style.display = 'none';
+    etaInput.value = '';
+  }
+  localStorage.setItem('poker_name', nameInput.value.trim());
+  localStorage.setItem('poker_rsvp_{{ game["code"] }}', status);
+  document.getElementById('status').value = status;
+  document.getElementById('rsvpForm').submit();
+}
+
+function toggleInfo() {
+  const el = document.getElementById('infoPopup');
+  el.style.display = (el.style.display === 'none' || !el.style.display) ? 'block' : 'none';
+}
+
+(function() {
+  const key = 'poker_rsvp_{{ game["code"] }}';
+  if (localStorage.getItem(key)) {
+    document.getElementById('alreadyVoted').style.display = 'block';
+  }
+})();
+
+(function() {
+  function scrollIfLandscape() {
+    if (window.innerWidth > window.innerHeight) {
+      window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+    }
+  }
+  window.addEventListener('orientationchange', scrollIfLandscape);
+  window.addEventListener('resize', scrollIfLandscape);
+})();
+</script>
+{% endblock %}

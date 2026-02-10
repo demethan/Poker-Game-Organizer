@@ -1,0 +1,147 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>{{ game['title'] }}</h1>
+<p class="game-meta">
+  <span class="game-datetime">🗓️ {{ game['game_date'] }} at {{ game['game_time'] }}</span>
+  <span class="game-location">
+    📍 {{ game['location'] }}
+  </span>
+</p>
+<div class="row">
+  <button class="btn secondary copy-btn" type="button" data-link="https://{{ request.headers.get('host') }}/game?g={{ game['code'] }}">Copy Invite Link</button>
+  <span class="badge">Invite Link: /game?g={{ game['code'] }}</span>
+  <span class="badge">Players IN: {{ in_count }} / {{ game['total_players'] }}</span>
+</div>
+<div class="row" style="margin-top: 12px;">
+  <form method="post" action="/games/{{ game['id'] }}/delete" onsubmit="return confirm('Delete this game and all RSVPs?');">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <button class="btn danger" type="submit">Delete Game</button>
+  </form>
+</div>
+
+<h2>RSVPs</h2>
+<div class="row" style="margin-bottom: 12px;">
+  <button class="btn secondary" type="button" id="sortStatus">Sort by Status</button>
+  <span class="badge" id="activeFilter" style="display:none;">Filter: <span id="activeFilterValue"></span> (tap to clear)</span>
+</div>
+<table class="table rsvp-table" id="rsvpTable">
+  <thead>
+    <tr>
+      <th>Name</th>
+      <th class="hide-mobile">Cell</th>
+      <th>Status</th>
+      <th>ETA</th>
+      <th class="hide-mobile">Time</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for r in rsvps %}
+    <tr data-status="{{ r['status'] }}">
+      <td data-label="Name">{{ r['name'] }}</td>
+      <td class="hide-mobile" data-label="Cell">{{ r['phone'] or '-' }}</td>
+      <td data-label="Status">{{ r['status'] }}</td>
+      <td data-label="ETA">{{ r['late_eta'] or '-' }}</td>
+      <td class="hide-mobile" data-label="Time">{{ r['created_at'] | fmt_ts }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+<h2>Standby List</h2>
+{% if standby|length == 0 %}
+  <p>No one on standby yet.</p>
+{% else %}
+<table class="table rsvp-table">
+  <thead>
+    <tr>
+      <th>Name</th>
+      <th>Cell</th>
+      <th>#</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for s in standby %}
+    <tr>
+      <td data-label="Name">{{ s['name'] }}</td>
+      <td data-label="Cell">{{ s['phone'] or '-' }}</td>
+      <td data-label="#">#{{ loop.index }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+<script>
+  setTimeout(() => { window.location.reload(); }, 30000);
+
+  (function() {
+    const activeFilter = document.getElementById('activeFilter');
+    const activeFilterValue = document.getElementById('activeFilterValue');
+    const sortBtn = document.getElementById('sortStatus');
+    const tbody = document.querySelector('#rsvpTable tbody');
+    if (!sortBtn || !tbody || !activeFilter || !activeFilterValue) return;
+
+    const order = { IN: 1, LATE: 2, OUT: 3 };
+
+    let currentFilter = null;
+    function applyFilter() {
+      const value = currentFilter;
+      tbody.querySelectorAll('tr').forEach(tr => {
+        const status = tr.getAttribute('data-status');
+        tr.style.display = (!value || status === value) ? '' : 'none';
+      });
+      if (value) {
+        activeFilterValue.textContent = value;
+        activeFilter.style.display = 'inline-flex';
+      } else {
+        activeFilter.style.display = 'none';
+      }
+    }
+
+    function sortByStatus() {
+      const rows = Array.from(tbody.querySelectorAll('tr'));
+      rows.sort((a, b) => {
+        const sa = order[a.getAttribute('data-status')] || 99;
+        const sb = order[b.getAttribute('data-status')] || 99;
+        return sa - sb;
+      });
+      rows.forEach(r => tbody.appendChild(r));
+    }
+
+    sortBtn.addEventListener('click', () => {
+      sortByStatus();
+      applyFilter();
+    });
+
+    activeFilter.addEventListener('click', () => {
+      currentFilter = null;
+      applyFilter();
+    });
+
+    tbody.addEventListener('click', (e) => {
+      const row = e.target.closest('tr');
+      if (!row) return;
+      const status = row.getAttribute('data-status');
+      if (!status) return;
+      currentFilter = (currentFilter === status) ? null : status;
+      applyFilter();
+    });
+  })();
+
+  (function() {
+    const btn = document.querySelector('.copy-btn');
+    if (!btn) return;
+    btn.addEventListener('click', async () => {
+      const link = btn.getAttribute('data-link');
+      try {
+        await navigator.clipboard.writeText(link);
+        btn.textContent = 'Copied!';
+        setTimeout(() => { btn.textContent = 'Copy Invite Link'; }, 1500);
+      } catch (e) {
+        prompt('Copy this link:', link);
+      }
+    });
+  })();
+
+</script>
+{% endblock %}

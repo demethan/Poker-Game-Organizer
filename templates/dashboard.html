@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Welcome, {{ user['name'] }}</h1>
+<div class="row">
+  <a class="btn" href="/games/new">Create New Game</a>
+</div>
+
+<h2>Your Games</h2>
+{% if games|length == 0 %}
+  <p>No games yet.</p>
+{% else %}
+  {% for game in games %}
+  <div class="card">
+    <h3>{{ game['title'] }}</h3>
+    <p>{{ game['game_date'] }} at {{ game['game_time'] }} • {{ game['location'] }}</p>
+    <div class="row">
+      <span class="badge">Total Players: {{ game['total_players'] }}</span>
+      <span class="badge">Code: {{ game['code'] }}</span>
+    </div>
+    <div class="row" style="margin-top: 12px;">
+      <a class="btn secondary" href="/games/{{ game['id'] }}">View</a>
+      <button class="btn secondary copy-btn" type="button" data-link="https://{{ request.headers.get('host') }}/game?g={{ game['code'] }}">Copy Invite Link</button>
+      <span class="badge">Invite Link: /game?g={{ game['code'] }}</span>
+    </div>
+  </div>
+  {% endfor %}
+{% endif %}
+
+<script>
+  (function() {
+    const buttons = document.querySelectorAll('.copy-btn');
+    buttons.forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const link = btn.getAttribute('data-link');
+        try {
+          await navigator.clipboard.writeText(link);
+          btn.textContent = 'Copied!';
+          setTimeout(() => { btn.textContent = 'Copy Invite Link'; }, 1500);
+        } catch (e) {
+          prompt('Copy this link:', link);
+        }
+      });
+    });
+  })();
+</script>
+{% endblock %}

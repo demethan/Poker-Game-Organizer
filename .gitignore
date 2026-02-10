@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+poker.db
+certs/
+.env
+
+# OS
+.DS_Store
+
+# Logs
+*.log

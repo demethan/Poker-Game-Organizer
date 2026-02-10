@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title if title else "Luck's Poker Game Organizer" }}</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">Luck's Poker Game Organizer</div>
+      {% if request.session.get('user_id') %}
+      <nav class="nav">
+        <a href="/dashboard">Dashboard</a>
+        <a href="/games/new">New Game</a>
+        {% if request.session.get('is_admin') %}
+        <a href="/admin">Admin</a>
+        {% endif %}
+        <a href="/logout">Logout</a>
+      </nav>
+      {% endif %}
+    </header>
+
+    <main class="content">
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+</body>
+</html>

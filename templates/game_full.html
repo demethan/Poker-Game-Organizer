@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>{{ game['title'] }}</h1>
+<p>{{ game['game_date'] }} at {{ game['game_time'] }} • {{ game['location'] }}</p>
+<div class="card">
+  <h2>GAME FULL</h2>
+  <p id="standbyIntro">You can join the standby list.</p>
+  <div id="alreadyStandby" class="notice notice-strong" style="display:none;">
+    You are already on the standby list for this game.
+    <span id="standbyPosition"></span>
+  </div>
+  <form method="post" action="/g/{{ game['code'] }}/standby" id="standbyForm" class="grid grid-2">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <div class="standby-field">
+      <label>Name</label>
+      <input type="text" name="name" id="standbyName" required>
+    </div>
+    <div class="standby-field">
+      <label>Cell (optional)</label>
+      <input type="tel" name="phone" id="standbyPhone" disabled placeholder="Coming soon">
+    </div>
+    <div class="form-actions standby-field">
+      <button class="btn" type="submit">Add me to standby list</button>
+    </div>
+  </form>
+</div>
+
+<script>
+(function() {
+  const nameInput = document.getElementById('standbyName');
+  const savedName = localStorage.getItem('poker_name');
+  if (savedName) nameInput.value = savedName;
+})();
+
+document.getElementById('standbyForm').addEventListener('submit', function() {
+  const nameInput = document.getElementById('standbyName');
+  if (nameInput.value.trim()) {
+    localStorage.setItem('poker_name', nameInput.value.trim());
+  }
+  localStorage.setItem('poker_standby_{{ game["code"] }}', '1');
+});
+
+(function() {
+  const key = 'poker_standby_{{ game["code"] }}';
+  const posKey = 'poker_standby_pos_{{ game["code"] }}';
+  if (localStorage.getItem(key)) {
+    document.getElementById('alreadyStandby').style.display = 'block';
+    const intro = document.getElementById('standbyIntro');
+    if (intro) intro.style.display = 'none';
+    const pos = localStorage.getItem(posKey);
+    if (pos) {
+      document.getElementById('standbyPosition').textContent = ` (Position #${pos})`;
+    }
+    document.querySelectorAll('.standby-field').forEach(el => {
+      el.style.display = 'none';
+    });
+  }
+})();
+</script>
+{% endblock %}

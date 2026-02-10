@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Thanks!</h1>
+<p>Your response has been recorded as <strong>{{ status }}</strong>.</p>
+{% if status == 'LATE' and late_eta %}
+  <p>ETA: <strong>{{ late_eta }}</strong></p>
+{% endif %}
+<p>{{ game['title'] }} • {{ game['game_date'] }} at {{ game['game_time'] }}</p>
+<script>
+  localStorage.setItem('poker_rsvp_{{ game["code"] }}', '{{ status }}');
+</script>
+{% endblock %}
