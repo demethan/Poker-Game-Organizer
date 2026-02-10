@@ -11,6 +11,9 @@
   <h3>Players IN</h3>
   {% if (in_players and in_players|length > 0) or (late_players and late_players|length > 0) %}
     <div class="row">
+      {% if host_name %}
+        <span class="badge">🏠 {{ host_name }}</span>
+      {% endif %}
       {% for name in in_players %}
         <span class="badge">{{ name }}</span>
       {% endfor %}
@@ -21,6 +24,13 @@
   {% else %}
     <p>No one has joined yet.</p>
   {% endif %}
+</div>
+
+<div class="card">
+  <h3>Players OUT</h3>
+  <div class="row">
+    <span class="badge">{{ out_count }}</span>
+  </div>
 </div>
 <div id="alreadyVoted" class="notice notice-strong" style="display:none;">
   You already responded to this game. You can update your status below.

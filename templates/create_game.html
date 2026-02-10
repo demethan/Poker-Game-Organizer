@@ -26,6 +26,10 @@
     <input type="number" name="total_players" min="1" required value="{{ last_game['total_players'] if last_game else '' }}">
   </div>
   <div>
+    <label>Host Seat (optional)</label>
+    <input type="number" name="host_seat" min="1" placeholder="Leave blank for random">
+  </div>
+  <div>
     <label>Organizer Display Name</label>
     <input type="text" name="organizer_name" required value="{{ last_organizer_name if last_organizer_name else '' }}">
   </div>

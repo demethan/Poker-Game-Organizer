@@ -17,6 +17,7 @@
         {% if request.session.get('is_admin') %}
         <a href="/admin">Admin</a>
         {% endif %}
+        <span class="badge">Logged in: {{ request.session.get('user_name') or 'User' }}</span>
         <a href="/logout">Logout</a>
       </nav>
       {% endif %}

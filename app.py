@@ -4,7 +4,7 @@ import os
 import secrets
 import sqlite3
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -32,6 +32,40 @@ app.add_middleware(
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
+
+# Python 3.8 environment: implement America/Thunder_Bay (EST/EDT) without zoneinfo.
+def _thunder_bay_dst_bounds(year: int):
+    # DST starts 2nd Sunday in March at 2:00, ends 1st Sunday in November at 2:00.
+    march = datetime(year, 3, 1)
+    march_weekday = march.weekday()  # Mon=0..Sun=6
+    first_sunday_march = march + timedelta(days=(6 - march_weekday) % 7)
+    second_sunday_march = first_sunday_march + timedelta(days=7)
+    dst_start = datetime(year, 3, second_sunday_march.day, 2, 0, 0)
+
+    november = datetime(year, 11, 1)
+    nov_weekday = november.weekday()
+    first_sunday_nov = november + timedelta(days=(6 - nov_weekday) % 7)
+    dst_end = datetime(year, 11, first_sunday_nov.day, 2, 0, 0)
+    return dst_start, dst_end
+
+
+def _is_thunder_bay_dst(local_dt: datetime) -> bool:
+    dst_start, dst_end = _thunder_bay_dst_bounds(local_dt.year)
+    return dst_start <= local_dt < dst_end
+
+
+def thunder_bay_now() -> datetime:
+    now_utc = datetime.utcnow()
+    local_guess = now_utc + timedelta(hours=-5)
+    if _is_thunder_bay_dst(local_guess):
+        local = now_utc + timedelta(hours=-4)
+        return local.replace(tzinfo=timezone(timedelta(hours=-4)))
+    return local_guess.replace(tzinfo=timezone(timedelta(hours=-5)))
+
+
+def thunder_bay_localize(local_dt: datetime) -> datetime:
+    offset_hours = -4 if _is_thunder_bay_dst(local_dt) else -5
+    return local_dt.replace(tzinfo=timezone(timedelta(hours=offset_hours)))
 
 
 def format_ts(value: str) -> str:
@@ -185,7 +219,15 @@ def init_db():
         """
     )
     cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_rsvps_game_name ON rsvps(game_id, lower(name))")
+    cur.execute("PRAGMA table_info(rsvps)")
+    rsvp_cols = {row["name"] for row in cur.fetchall()}
+    if "seat_number" not in rsvp_cols:
+        cur.execute("ALTER TABLE rsvps ADD COLUMN seat_number INTEGER")
+    cur.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_rsvps_game_seat ON rsvps(game_id, seat_number) WHERE seat_number IS NOT NULL"
+    )
     conn.commit()
+    backfill_seats(conn)
     conn.close()
 
 
@@ -237,6 +279,44 @@ def count_in(conn: sqlite3.Connection, game_id: int) -> int:
     return int(row["c"]) if row else 0
 
 
+def available_seats(conn: sqlite3.Connection, game_id: int, total_players: int) -> list:
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT seat_number FROM rsvps WHERE game_id = ? AND seat_number IS NOT NULL",
+        (game_id,),
+    )
+    taken = {row["seat_number"] for row in cur.fetchall()}
+    return [n for n in range(1, total_players + 1) if n not in taken]
+
+
+def assign_random_seat(conn: sqlite3.Connection, game_id: int, total_players: int) -> Optional[int]:
+    seats = available_seats(conn, game_id, total_players)
+    if not seats:
+        return None
+    return secrets.choice(seats)
+
+
+def backfill_seats(conn: sqlite3.Connection) -> None:
+    cur = conn.cursor()
+    cur.execute("SELECT id, total_players FROM games")
+    games = cur.fetchall()
+    for game in games:
+        cur.execute(
+            "SELECT id FROM rsvps WHERE game_id = ? AND status IN ('IN','LATE','HOST') AND seat_number IS NULL ORDER BY datetime(created_at) ASC, id ASC",
+            (game["id"],),
+        )
+        rows = cur.fetchall()
+        if not rows:
+            continue
+        seats = available_seats(conn, game["id"], game["total_players"])
+        for row in rows:
+            if not seats:
+                break
+            seat = seats.pop(0)
+            cur.execute("UPDATE rsvps SET seat_number = ? WHERE id = ?", (seat, row["id"]))
+    conn.commit()
+
+
 def verify_csrf(request: Request, token: str) -> bool:
     return token and token == request.session.get("csrf_token")
 
@@ -258,6 +338,15 @@ def cleanup_old_games(conn: sqlite3.Connection, organizer_id: int) -> None:
     cur.execute("DELETE FROM rsvps WHERE game_id IN (%s)" % ",".join("?" * len(old_ids)), old_ids)
     cur.execute("DELETE FROM standby WHERE game_id IN (%s)" % ",".join("?" * len(old_ids)), old_ids)
     cur.execute("DELETE FROM games WHERE id IN (%s)" % ",".join("?" * len(old_ids)), old_ids)
+
+
+def is_game_expired(game_row) -> bool:
+    try:
+        dt = datetime.fromisoformat(f"{game_row['game_date']}T{game_row['game_time']}")
+        local_dt = thunder_bay_localize(dt)
+        return thunder_bay_now() > (local_dt + timedelta(hours=6))
+    except Exception:
+        return False
 
 
 # ------------------------
@@ -347,7 +436,7 @@ def login(
     cur = conn.cursor()
     identifier = email.strip()
     cur.execute(
-        "SELECT id, password_hash, is_admin, is_disabled FROM users WHERE email = ? OR username = ?",
+        "SELECT id, password_hash, is_admin, is_disabled, name FROM users WHERE email = ? OR username = ?",
         (identifier.lower(), identifier),
     )
     row = cur.fetchone()
@@ -366,6 +455,7 @@ def login(
         )
     request.session["user_id"] = row["id"]
     request.session["is_admin"] = int(row["is_admin"] or 0)
+    request.session["user_name"] = row["name"]
     return RedirectResponse(url="/dashboard", status_code=302)
 
 
@@ -467,7 +557,7 @@ def admin_reset_user(request: Request, user_id: int, csrf_token: str = Form(...)
     conn.close()
     return templates.TemplateResponse(
         "admin.html",
-        {"request": request, "users": users, "error": None, "success": f\"Temporary password: {new_password}\"},
+        {"request": request, "users": users, "error": None, "success": f"Temporary password: {new_password}"},
     )
 
 
@@ -538,6 +628,7 @@ def new_game(
     game_time: str = Form(...),
     total_players: int = Form(...),
     organizer_name: str = Form(...),
+    host_seat: str = Form(None),
     csrf_token: str = Form(...),
 ):
     user_id = require_login(request)
@@ -579,10 +670,27 @@ def new_game(
     )
     game_id = cur.lastrowid
 
-    # Organizer counts as IN (HOST)
+    # Organizer counts as IN (HOST) with seat
+    seat_number = None
+    if host_seat:
+        try:
+            seat_number = int(host_seat)
+        except ValueError:
+            seat_number = None
+    if seat_number is not None:
+        if seat_number < 1 or seat_number > total_players:
+            conn.close()
+            return templates.TemplateResponse(
+                "create_game.html",
+                {"request": request, "error": "Host seat must be within total players."},
+                status_code=400,
+            )
+    else:
+        seat_number = assign_random_seat(conn, game_id, total_players)
+
     cur.execute(
-        "INSERT INTO rsvps (game_id, name, phone, status, created_at) VALUES (?, ?, ?, ?, ?)",
-        (game_id, cleaned_organizer, None, "HOST", now),
+        "INSERT INTO rsvps (game_id, name, phone, status, seat_number, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        (game_id, cleaned_organizer, None, "HOST", seat_number, now),
     )
     conn.commit()
     conn.close()
@@ -621,6 +729,8 @@ def view_game(request: Request, game_id: int):
             "rsvps": rsvps,
             "standby": standby,
             "in_count": in_count,
+            "error": request.query_params.get("error"),
+            "success": request.query_params.get("success"),
         },
     )
 
@@ -650,6 +760,131 @@ def delete_game(request: Request, game_id: int, csrf_token: str = Form(...)):
     return RedirectResponse(url="/dashboard", status_code=302)
 
 
+@app.post("/games/{game_id}/rsvp/{rsvp_id}/update")
+def update_rsvp(
+    request: Request,
+    game_id: int,
+    rsvp_id: int,
+    name: str = Form(...),
+    status: str = Form(...),
+    late_eta: str = Form(None),
+    csrf_token: str = Form(...),
+):
+    user_id = require_login(request)
+    if not user_id:
+        return RedirectResponse(url="/login", status_code=302)
+    if not verify_csrf(request, csrf_token):
+        return PlainTextResponse("Bad CSRF token", status_code=400)
+
+    status = status.upper().strip()
+    if status not in {"IN", "LATE", "OUT", "HOST"}:
+        return RedirectResponse(url=f"/games/{game_id}?error=Invalid%20status", status_code=302)
+
+    try:
+        cleaned_name = clean_text(name, 50)
+    except ValueError:
+        return RedirectResponse(url=f"/games/{game_id}?error=Invalid%20name", status_code=302)
+
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM games WHERE id = ? AND organizer_id = ?", (game_id, user_id))
+    game = cur.fetchone()
+    if not game:
+        conn.close()
+        return RedirectResponse(url="/dashboard", status_code=302)
+
+    cur.execute("SELECT * FROM rsvps WHERE id = ? AND game_id = ?", (rsvp_id, game_id))
+    rsvp = cur.fetchone()
+    if not rsvp:
+        conn.close()
+        return RedirectResponse(url=f"/games/{game_id}?error=RSVP%20not%20found", status_code=302)
+
+    # Prevent duplicate names in same game
+    cur.execute(
+        "SELECT id FROM rsvps WHERE game_id = ? AND LOWER(name) = LOWER(?) AND id != ?",
+        (game_id, cleaned_name, rsvp_id),
+    )
+    if cur.fetchone():
+        conn.close()
+        return RedirectResponse(url=f"/games/{game_id}?error=Name%20already%20exists", status_code=302)
+
+    new_seat = rsvp["seat_number"]
+    if status in {"IN", "LATE", "HOST"} and not new_seat:
+        new_seat = assign_random_seat(conn, game_id, game["total_players"])
+    if status == "OUT":
+        new_seat = None
+
+    cur.execute(
+        "UPDATE rsvps SET name = ?, status = ?, late_eta = ?, seat_number = ? WHERE id = ?",
+        (cleaned_name, status, (late_eta or "").strip() or None, new_seat, rsvp_id),
+    )
+    conn.commit()
+    conn.close()
+    return RedirectResponse(url=f"/games/{game_id}?success=Updated", status_code=302)
+
+
+@app.post("/games/{game_id}/standby/{standby_id}/promote")
+def promote_standby(
+    request: Request,
+    game_id: int,
+    standby_id: int,
+    csrf_token: str = Form(...),
+):
+    user_id = require_login(request)
+    if not user_id:
+        return RedirectResponse(url="/login", status_code=302)
+    if not verify_csrf(request, csrf_token):
+        return PlainTextResponse("Bad CSRF token", status_code=400)
+
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM games WHERE id = ? AND organizer_id = ?", (game_id, user_id))
+    game = cur.fetchone()
+    if not game:
+        conn.close()
+        return RedirectResponse(url="/dashboard", status_code=302)
+
+    cur.execute("SELECT * FROM standby WHERE id = ? AND game_id = ?", (standby_id, game_id))
+    standby_row = cur.fetchone()
+    if not standby_row:
+        conn.close()
+        return RedirectResponse(url=f"/games/{game_id}?error=Standby%20not%20found", status_code=302)
+
+    try:
+        cleaned_name = clean_text(standby_row["name"], 50)
+    except ValueError:
+        conn.close()
+        return RedirectResponse(url=f"/games/{game_id}?error=Invalid%20name", status_code=302)
+
+    cur.execute(
+        "SELECT id FROM rsvps WHERE game_id = ? AND LOWER(name) = LOWER(?)",
+        (game_id, cleaned_name),
+    )
+    if cur.fetchone():
+        conn.close()
+        return RedirectResponse(url=f"/games/{game_id}?error=Name%20already%20exists", status_code=302)
+
+    total_players = int(game["total_players"])
+    if count_in(conn, game_id) >= total_players:
+        total_players += 1
+        cur.execute("UPDATE games SET total_players = ? WHERE id = ?", (total_players, game_id))
+
+    seat_number = assign_random_seat(conn, game_id, total_players)
+    if seat_number is None:
+        conn.close()
+        return RedirectResponse(url=f"/games/{game_id}?error=No%20available%20seats", status_code=302)
+
+    now = datetime.utcnow().isoformat()
+    cur.execute(
+        "INSERT INTO rsvps (game_id, name, phone, status, late_eta, seat_number, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (game_id, cleaned_name, standby_row["phone"], "IN", None, seat_number, now),
+    )
+    cur.execute("DELETE FROM standby WHERE id = ?", (standby_id,))
+    conn.commit()
+    conn.close()
+    return RedirectResponse(url=f"/games/{game_id}?success=Moved%20to%20IN", status_code=302)
+
+
 @app.get("/game", response_class=HTMLResponse)
 def game_by_query(request: Request, g: Optional[str] = None):
     if not g:
@@ -676,16 +911,29 @@ def game_by_code(request: Request, code: str):
             status_code=404,
         )
 
+    if is_game_expired(game):
+        conn.close()
+        return templates.TemplateResponse(
+            "game_not_found.html",
+            {"request": request, "message": "This game has expired."},
+            status_code=404,
+        )
+
     # If organizer opens invite link while logged in, send to organizer view
     if user_id and game["organizer_id"] == user_id:
         conn.close()
         return RedirectResponse(url=f"/games/{game['id']}", status_code=302)
 
     in_count = count_in(conn, game["id"])
+    cur.execute("SELECT name FROM rsvps WHERE game_id = ? AND status = 'HOST' ORDER BY created_at ASC LIMIT 1", (game["id"],))
+    host_row = cur.fetchone()
+    host_name = host_row["name"] if host_row else None
     cur.execute("SELECT name FROM rsvps WHERE game_id = ? AND status = 'IN' ORDER BY created_at ASC", (game["id"],))
     in_players = [row["name"] for row in cur.fetchall()]
     cur.execute("SELECT name FROM rsvps WHERE game_id = ? AND status = 'LATE' ORDER BY created_at ASC", (game["id"],))
     late_players = [row["name"] for row in cur.fetchall()]
+    cur.execute("SELECT COUNT(*) AS c FROM rsvps WHERE game_id = ? AND status = 'OUT'", (game["id"],))
+    out_count = int(cur.fetchone()["c"])
     conn.close()
 
     if in_count >= game["total_players"]:
@@ -696,7 +944,15 @@ def game_by_code(request: Request, code: str):
 
     return templates.TemplateResponse(
         "game.html",
-        {"request": request, "game": game, "in_count": in_count, "in_players": in_players, "late_players": late_players},
+        {
+            "request": request,
+            "game": game,
+            "in_count": in_count,
+            "in_players": in_players,
+            "late_players": late_players,
+            "host_name": host_name,
+            "out_count": out_count,
+        },
     )
 
 
@@ -728,8 +984,8 @@ def rsvp_game(
             status_code=404,
         )
 
-    # If IN and full, show full page
-    if status == "IN":
+    # If IN/LATE and full, show full page
+    if status in {"IN", "LATE"}:
         if count_in(conn, game["id"]) >= game["total_players"]:
             conn.close()
             return templates.TemplateResponse(
@@ -750,22 +1006,35 @@ def rsvp_game(
         (game["id"], cleaned_name),
     )
     existing = cur.fetchone()
+    current_seat = None
     if existing:
+        cur.execute("SELECT seat_number FROM rsvps WHERE id = ?", (existing["id"],))
+        seat_row = cur.fetchone()
+        current_seat = seat_row["seat_number"] if seat_row else None
+        new_seat = current_seat
+        if status in {"IN", "LATE"} and current_seat is None:
+            new_seat = assign_random_seat(conn, game["id"], game["total_players"])
+        if status == "OUT":
+            new_seat = None
         cur.execute(
-            "UPDATE rsvps SET phone = ?, status = ?, late_eta = ?, created_at = ? WHERE id = ?",
-            (cleaned_phone, status, cleaned_eta, now, existing["id"]),
+            "UPDATE rsvps SET phone = ?, status = ?, late_eta = ?, seat_number = ?, created_at = ? WHERE id = ?",
+            (cleaned_phone, status, cleaned_eta, new_seat, now, existing["id"]),
         )
     else:
+        new_seat = None
+        if status in {"IN", "LATE"}:
+            new_seat = assign_random_seat(conn, game["id"], game["total_players"])
         cur.execute(
-            "INSERT INTO rsvps (game_id, name, phone, status, late_eta, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-            (game["id"], cleaned_name, cleaned_phone, status, cleaned_eta, now),
+            "INSERT INTO rsvps (game_id, name, phone, status, late_eta, seat_number, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (game["id"], cleaned_name, cleaned_phone, status, cleaned_eta, new_seat, now),
         )
+    seat_to_show = new_seat
     conn.commit()
     conn.close()
 
     return templates.TemplateResponse(
         "rsvp_thanks.html",
-        {"request": request, "game": game, "status": status, "late_eta": late_eta},
+        {"request": request, "game": game, "status": status, "late_eta": late_eta, "seat_number": seat_to_show},
     )
 
 

@@ -1,6 +1,8 @@
 {% extends "base.html" %}
 {% block content %}
 <h1>{{ game['title'] }}</h1>
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+{% if success %}<div class="notice notice-strong">{{ success }}</div>{% endif %}
 <p class="game-meta">
   <span class="game-datetime">🗓️ {{ game['game_date'] }} at {{ game['game_time'] }}</span>
   <span class="game-location">
@@ -20,18 +22,20 @@
 </div>
 
 <h2>RSVPs</h2>
+<div class="rotate-pill" aria-hidden="true">Rotate to landscape to edit RSVPs</div>
 <div class="row" style="margin-bottom: 12px;">
-  <button class="btn secondary" type="button" id="sortStatus">Sort by Status</button>
   <span class="badge" id="activeFilter" style="display:none;">Filter: <span id="activeFilterValue"></span> (tap to clear)</span>
 </div>
 <table class="table rsvp-table" id="rsvpTable">
   <thead>
     <tr>
-      <th>Name</th>
+      <th id="sortName" style="cursor: pointer;">Name</th>
       <th class="hide-mobile">Cell</th>
-      <th>Status</th>
+      <th class="hide-mobile" id="sortSeat" style="cursor: pointer;">Seat</th>
+      <th id="sortStatus" style="cursor: pointer;">Status</th>
       <th>ETA</th>
-      <th class="hide-mobile">Time</th>
+      <th class="hide-mobile" id="sortTime" style="cursor: pointer;">Time</th>
+      <th class="hide-mobile">Edit</th>
     </tr>
   </thead>
   <tbody>
@@ -39,9 +43,19 @@
     <tr data-status="{{ r['status'] }}">
       <td data-label="Name">{{ r['name'] }}</td>
       <td class="hide-mobile" data-label="Cell">{{ r['phone'] or '-' }}</td>
+      <td class="hide-mobile" data-label="Seat">{{ r['seat_number'] or '-' }}</td>
       <td data-label="Status">{{ r['status'] }}</td>
       <td data-label="ETA">{{ r['late_eta'] or '-' }}</td>
       <td class="hide-mobile" data-label="Time">{{ r['created_at'] | fmt_ts }}</td>
+      <td class="hide-mobile" data-label="Edit">
+        <button class="btn secondary edit-rsvp-btn edit-btn" type="button"
+          data-id="{{ r['id'] }}"
+          data-name="{{ r['name'] }}"
+          data-status="{{ r['status'] }}"
+          data-eta="{{ r['late_eta'] or '' }}">
+          Edit
+        </button>
+      </td>
     </tr>
   {% endfor %}
   </tbody>
@@ -57,6 +71,7 @@
       <th>Name</th>
       <th>Cell</th>
       <th>#</th>
+      <th>Action</th>
     </tr>
   </thead>
   <tbody>
@@ -65,11 +80,47 @@
       <td data-label="Name">{{ s['name'] }}</td>
       <td data-label="Cell">{{ s['phone'] or '-' }}</td>
       <td data-label="#">#{{ loop.index }}</td>
+      <td data-label="Action">
+        <form method="post" action="/games/{{ game['id'] }}/standby/{{ s['id'] }}/promote">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+          <button class="btn" type="submit">Add IN</button>
+        </form>
+      </td>
     </tr>
   {% endfor %}
   </tbody>
 </table>
 {% endif %}
+
+<div id="rsvpModal" class="modal" style="display:none;">
+  <div class="modal-card">
+    <h3>Edit RSVP</h3>
+    <form method="post" id="rsvpEditForm">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+      <div>
+        <label>Name</label>
+        <input type="text" name="name" id="editName" required>
+      </div>
+      <div>
+        <label>Status</label>
+        <select name="status" id="editStatus">
+          <option value="IN">IN</option>
+          <option value="LATE">LATE</option>
+          <option value="OUT">OUT</option>
+          <option value="HOST">HOST</option>
+        </select>
+      </div>
+      <div>
+        <label>ETA</label>
+        <input type="text" name="late_eta" id="editEta" placeholder="ETA">
+      </div>
+      <div class="row">
+        <button class="btn" type="submit">Save</button>
+        <button class="btn secondary" type="button" id="closeModal">Cancel</button>
+      </div>
+    </form>
+  </div>
+</div>
 
 <script>
   setTimeout(() => { window.location.reload(); }, 30000);
@@ -77,18 +128,24 @@
   (function() {
     const activeFilter = document.getElementById('activeFilter');
     const activeFilterValue = document.getElementById('activeFilterValue');
-    const sortBtn = document.getElementById('sortStatus');
+    const sortStatusBtn = document.getElementById('sortStatus');
+    const sortNameBtn = document.getElementById('sortName');
+    const sortTimeBtn = document.getElementById('sortTime');
+    const sortSeatBtn = document.getElementById('sortSeat');
     const tbody = document.querySelector('#rsvpTable tbody');
-    if (!sortBtn || !tbody || !activeFilter || !activeFilterValue) return;
+    if (!tbody || !activeFilter || !activeFilterValue) return;
 
-    const order = { IN: 1, LATE: 2, OUT: 3 };
+    const order = { HOST: 0, IN: 1, LATE: 2, OUT: 3 };
 
     let currentFilter = null;
     function applyFilter() {
       const value = currentFilter;
       tbody.querySelectorAll('tr').forEach(tr => {
-        const status = tr.getAttribute('data-status');
-        tr.style.display = (!value || status === value) ? '' : 'none';
+        const status = (tr.getAttribute('data-status') || '').trim().toUpperCase();
+        const show = !value
+          || status === value
+          || (value === 'IN' && status === 'HOST');
+        tr.style.display = show ? '' : 'none';
       });
       if (value) {
         activeFilterValue.textContent = value;
@@ -101,15 +158,66 @@
     function sortByStatus() {
       const rows = Array.from(tbody.querySelectorAll('tr'));
       rows.sort((a, b) => {
-        const sa = order[a.getAttribute('data-status')] || 99;
-        const sb = order[b.getAttribute('data-status')] || 99;
+        const sa = order[(a.getAttribute('data-status') || '').trim().toUpperCase()] ?? 99;
+        const sb = order[(b.getAttribute('data-status') || '').trim().toUpperCase()] ?? 99;
         return sa - sb;
       });
       rows.forEach(r => tbody.appendChild(r));
     }
 
-    sortBtn.addEventListener('click', () => {
+    function sortByName() {
+      const rows = Array.from(tbody.querySelectorAll('tr'));
+      rows.sort((a, b) => {
+        const an = (a.querySelector('[data-label="Name"]')?.textContent || '').trim().toLowerCase();
+        const bn = (b.querySelector('[data-label="Name"]')?.textContent || '').trim().toLowerCase();
+        return an.localeCompare(bn);
+      });
+      rows.forEach(r => tbody.appendChild(r));
+    }
+
+    function sortByTime() {
+      const rows = Array.from(tbody.querySelectorAll('tr'));
+      rows.sort((a, b) => {
+        const at = (a.querySelector('[data-label="Time"]')?.textContent || '').trim();
+        const bt = (b.querySelector('[data-label="Time"]')?.textContent || '').trim();
+        const ad = at ? new Date(at.replace(' ', 'T') + ':00') : new Date(0);
+        const bd = bt ? new Date(bt.replace(' ', 'T') + ':00') : new Date(0);
+        return ad - bd;
+      });
+      rows.forEach(r => tbody.appendChild(r));
+    }
+
+    function sortBySeat() {
+      const rows = Array.from(tbody.querySelectorAll('tr'));
+      rows.sort((a, b) => {
+        const at = (a.querySelector('[data-label="Seat"]')?.textContent || '').trim();
+        const bt = (b.querySelector('[data-label="Seat"]')?.textContent || '').trim();
+        const an = parseInt(at, 10);
+        const bn = parseInt(bt, 10);
+        const av = Number.isNaN(an) ? 1e9 : an;
+        const bv = Number.isNaN(bn) ? 1e9 : bn;
+        return av - bv;
+      });
+      rows.forEach(r => tbody.appendChild(r));
+    }
+
+    sortStatusBtn && sortStatusBtn.addEventListener('click', () => {
       sortByStatus();
+      applyFilter();
+    });
+
+    sortNameBtn && sortNameBtn.addEventListener('click', () => {
+      sortByName();
+      applyFilter();
+    });
+
+    sortTimeBtn && sortTimeBtn.addEventListener('click', () => {
+      sortByTime();
+      applyFilter();
+    });
+
+    sortSeatBtn && sortSeatBtn.addEventListener('click', () => {
+      sortBySeat();
       applyFilter();
     });
 
@@ -143,5 +251,27 @@
     });
   })();
 
+  (function() {
+    const modal = document.getElementById('rsvpModal');
+    const form = document.getElementById('rsvpEditForm');
+    const nameInput = document.getElementById('editName');
+    const statusInput = document.getElementById('editStatus');
+    const etaInput = document.getElementById('editEta');
+    const closeBtn = document.getElementById('closeModal');
+    document.querySelectorAll('.edit-rsvp-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const id = btn.getAttribute('data-id');
+        nameInput.value = btn.getAttribute('data-name') || '';
+        statusInput.value = btn.getAttribute('data-status') || 'IN';
+        etaInput.value = btn.getAttribute('data-eta') || '';
+        form.action = `/games/{{ game['id'] }}/rsvp/${id}/update`;
+        modal.style.display = 'flex';
+      });
+    });
+    closeBtn.addEventListener('click', () => { modal.style.display = 'none'; });
+    modal.addEventListener('click', (e) => {
+      if (e.target === modal) modal.style.display = 'none';
+    });
+  })();
 </script>
 {% endblock %}
