@@ -823,6 +823,67 @@ def update_rsvp(
     return RedirectResponse(url=f"/games/{game_id}?success=Updated", status_code=302)
 
 
+@app.post("/games/{game_id}/rsvp/add")
+def add_rsvp(
+    request: Request,
+    game_id: int,
+    name: str = Form(...),
+    status: str = Form(...),
+    csrf_token: str = Form(...),
+):
+    user_id = require_login(request)
+    if not user_id:
+        return RedirectResponse(url="/login", status_code=302)
+    if not verify_csrf(request, csrf_token):
+        return PlainTextResponse("Bad CSRF token", status_code=400)
+
+    status = status.upper().strip()
+    if status not in {"IN", "LATE", "OUT"}:
+        return RedirectResponse(url=f"/games/{game_id}?error=Invalid%20status", status_code=302)
+
+    try:
+        cleaned_name = clean_text(name, 50)
+    except ValueError:
+        return RedirectResponse(url=f"/games/{game_id}?error=Invalid%20name", status_code=302)
+
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM games WHERE id = ? AND organizer_id = ?", (game_id, user_id))
+    game = cur.fetchone()
+    if not game:
+        conn.close()
+        return RedirectResponse(url="/dashboard", status_code=302)
+
+    cur.execute(
+        "SELECT id FROM rsvps WHERE game_id = ? AND LOWER(name) = LOWER(?)",
+        (game_id, cleaned_name),
+    )
+    if cur.fetchone():
+        conn.close()
+        return RedirectResponse(url=f"/games/{game_id}?error=Name%20already%20exists", status_code=302)
+
+    total_players = int(game["total_players"])
+    if status in {"IN", "LATE"} and count_in(conn, game_id) >= total_players:
+        total_players += 1
+        cur.execute("UPDATE games SET total_players = ? WHERE id = ?", (total_players, game_id))
+
+    seat_number = None
+    if status in {"IN", "LATE"}:
+        seat_number = assign_random_seat(conn, game_id, total_players)
+        if seat_number is None:
+            conn.close()
+            return RedirectResponse(url=f"/games/{game_id}?error=No%20available%20seats", status_code=302)
+
+    now = datetime.utcnow().isoformat()
+    cur.execute(
+        "INSERT INTO rsvps (game_id, name, phone, status, late_eta, seat_number, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (game_id, cleaned_name, None, status, None, seat_number, now),
+    )
+    conn.commit()
+    conn.close()
+    return RedirectResponse(url=f"/games/{game_id}?success=Added", status_code=302)
+
+
 @app.post("/games/{game_id}/standby/{standby_id}/promote")
 def promote_standby(
     request: Request,

@@ -61,6 +61,17 @@
   </tbody>
 </table>
 
+<form method="post" action="/games/{{ game['id'] }}/rsvp/add" class="row" style="margin-top: 12px; gap: 8px; align-items: center;">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+  <input type="text" name="name" placeholder="Name" required>
+  <select name="status" required>
+    <option value="IN">IN</option>
+    <option value="LATE">LATE</option>
+    <option value="OUT">OUT</option>
+  </select>
+  <button class="btn" type="submit">Add Player</button>
+</form>
+
 <h2>Standby List</h2>
 {% if standby|length == 0 %}
   <p>No one on standby yet.</p>
