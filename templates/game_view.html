@@ -31,7 +31,7 @@
     <tr>
       <th id="sortName" style="cursor: pointer;">Name</th>
       <th class="hide-mobile">Cell</th>
-      <th class="hide-mobile" id="sortSeat" style="cursor: pointer;">Seat</th>
+      <th id="sortSeat" style="cursor: pointer;">Seat</th>
       <th id="sortStatus" style="cursor: pointer;">Status</th>
       <th>ETA</th>
       <th class="hide-mobile" id="sortTime" style="cursor: pointer;">Time</th>
@@ -43,7 +43,7 @@
     <tr data-status="{{ r['status'] }}">
       <td data-label="Name">{{ r['name'] }}</td>
       <td class="hide-mobile" data-label="Cell">{{ r['phone'] or '-' }}</td>
-      <td class="hide-mobile" data-label="Seat">{{ r['seat_number'] or '-' }}</td>
+      <td data-label="Seat">{{ r['seat_number'] or '-' }}</td>
       <td data-label="Status">{{ r['status'] }}</td>
       <td data-label="ETA">{{ r['late_eta'] or '-' }}</td>
       <td class="hide-mobile" data-label="Time">{{ r['created_at'] | fmt_ts }}</td>
