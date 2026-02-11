@@ -202,6 +202,7 @@ label {
 
 @media (max-width: 900px) and (orientation: portrait) {
   .rotate-pill { display: inline-flex; }
+  .rsvp-table .hide-mobile { display: none; }
 }
 
 .badge {
@@ -260,5 +261,5 @@ label {
 .game-meta .game-location { display: block; margin-top: 4px; color: var(--muted); }
 .map-link { color: var(--muted); text-decoration: underline; }
 .map-link:hover { color: var(--text); }
-  .rsvp-table .hide-mobile { display: none; }
+  .rsvp-table { display: block; overflow-x: auto; -webkit-overflow-scrolling: touch; }
 }
