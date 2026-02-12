@@ -3,6 +3,9 @@
 <h1>{{ game['title'] }}</h1>
 {% if error %}<div class="error">{{ error }}</div>{% endif %}
 {% if success %}<div class="notice notice-strong">{{ success }}</div>{% endif %}
+{% if game['is_cancelled'] %}
+<div class="error">This game is cancelled. Invitees will see this game as cancelled.</div>
+{% endif %}
 <p class="game-meta">
   <span class="game-datetime">🗓️ {{ game['game_date'] }} at {{ game['game_time'] }}</span>
   <span class="game-location">
@@ -11,10 +14,18 @@
 </p>
 <div class="row">
   <button class="btn secondary copy-btn" type="button" data-link="https://{{ request.headers.get('host') }}/game?g={{ game['code'] }}">Copy Invite Link</button>
+  <button class="btn secondary copy-text-btn" type="button">Copy Invite Text</button>
   <span class="badge">Invite Link: /game?g={{ game['code'] }}</span>
   <span class="badge">Players IN: {{ in_count }} / {{ game['total_players'] }}</span>
+  {% if game['is_cancelled'] %}<span class="badge">Status: Cancelled</span>{% endif %}
 </div>
 <div class="row" style="margin-top: 12px;">
+  {% if not game['is_cancelled'] %}
+  <form method="post" action="/games/{{ game['id'] }}/cancel" onsubmit="return confirm('Cancel this game? Invitees will see it as cancelled.');">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <button class="btn danger" type="submit">Cancel Game</button>
+  </form>
+  {% endif %}
   <form method="post" action="/games/{{ game['id'] }}/delete" onsubmit="return confirm('Delete this game and all RSVPs?');">
     <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
     <button class="btn danger" type="submit">Delete Game</button>
@@ -36,14 +47,15 @@
       <th>ETA</th>
       <th class="hide-mobile" id="sortTime" style="cursor: pointer;">Time</th>
       <th class="hide-mobile">Edit</th>
+      <th>Text</th>
     </tr>
   </thead>
   <tbody>
   {% for r in rsvps %}
     <tr data-status="{{ r['status'] }}">
       <td data-label="Name">{{ r['name'] }}</td>
-      <td class="hide-mobile" data-label="Cell">{{ r['phone'] or '-' }}</td>
-      <td data-label="Seat">{{ r['seat_number'] or '-' }}</td>
+      <td class="hide-mobile" data-label="Cell">{{ r['phone'] | fmt_phone }}</td>
+      <td data-label="Seat" data-seat-number="{{ r['seat_number'] or '' }}">{{ r['seat_label'] or '-' }}</td>
       <td data-label="Status">{{ r['status'] }}</td>
       <td data-label="ETA">{{ r['late_eta'] or '-' }}</td>
       <td class="hide-mobile" data-label="Time">{{ r['created_at'] | fmt_ts }}</td>
@@ -52,9 +64,17 @@
           data-id="{{ r['id'] }}"
           data-name="{{ r['name'] }}"
           data-status="{{ r['status'] }}"
-          data-eta="{{ r['late_eta'] or '' }}">
+          data-eta="{{ r['late_eta'] or '' }}"
+          data-phone="{{ r['phone'] or '' }}">
           Edit
         </button>
+      </td>
+      <td data-label="Text">
+        {% if r['phone'] %}
+          <button class="btn secondary text-btn" type="button" data-phone="{{ r['phone'] }}" data-seat-label="{{ r['seat_label'] or '' }}">Text</button>
+        {% else %}
+          <span class="badge">—</span>
+        {% endif %}
       </td>
     </tr>
   {% endfor %}
@@ -64,6 +84,7 @@
 <form method="post" action="/games/{{ game['id'] }}/rsvp/add" class="row" style="margin-top: 12px; gap: 8px; align-items: center;">
   <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
   <input type="text" name="name" placeholder="Name" required>
+  <input type="tel" name="phone" placeholder="+1 (807) 555-1234">
   <select name="status" required>
     <option value="IN">IN</option>
     <option value="LATE">LATE</option>
@@ -89,7 +110,7 @@
   {% for s in standby %}
     <tr>
       <td data-label="Name">{{ s['name'] }}</td>
-      <td data-label="Cell">{{ s['phone'] or '-' }}</td>
+      <td data-label="Cell">{{ s['phone'] | fmt_phone }}</td>
       <td data-label="#">#{{ loop.index }}</td>
       <td data-label="Action">
         <form method="post" action="/games/{{ game['id'] }}/standby/{{ s['id'] }}/promote">
@@ -122,6 +143,10 @@
         </select>
       </div>
       <div>
+        <label>Cell</label>
+        <input type="tel" name="phone" id="editPhone" placeholder="+1 (807) 555-1234">
+      </div>
+      <div>
         <label>ETA</label>
         <input type="text" name="late_eta" id="editEta" placeholder="ETA">
       </div>
@@ -146,7 +171,7 @@
     const tbody = document.querySelector('#rsvpTable tbody');
     if (!tbody || !activeFilter || !activeFilterValue) return;
 
-    const order = { HOST: 0, IN: 1, LATE: 2, OUT: 3 };
+    const order = { IN: 0, HOST: 1, LATE: 2, OUT: 3 };
 
     let currentFilter = null;
     function applyFilter() {
@@ -201,10 +226,10 @@
     function sortBySeat() {
       const rows = Array.from(tbody.querySelectorAll('tr'));
       rows.sort((a, b) => {
-        const at = (a.querySelector('[data-label="Seat"]')?.textContent || '').trim();
-        const bt = (b.querySelector('[data-label="Seat"]')?.textContent || '').trim();
-        const an = parseInt(at, 10);
-        const bn = parseInt(bt, 10);
+        const at = a.querySelector('[data-label="Seat"]');
+        const bt = b.querySelector('[data-label="Seat"]');
+        const an = parseInt(at?.getAttribute('data-seat-number') || '', 10);
+        const bn = parseInt(bt?.getAttribute('data-seat-number') || '', 10);
         const av = Number.isNaN(an) ? 1e9 : an;
         const bv = Number.isNaN(bn) ? 1e9 : bn;
         return av - bv;
@@ -245,6 +270,10 @@
       currentFilter = (currentFilter === status) ? null : status;
       applyFilter();
     });
+
+    // Default organizer view: keep IN at the top.
+    sortByStatus();
+    applyFilter();
   })();
 
   (function() {
@@ -262,12 +291,54 @@
     });
   })();
 
+  function inviteText(seatLabel) {
+    const link = "https://{{ request.headers.get('host') }}/game?g={{ game['code'] }}";
+    const seatLine = seatLabel ? `\nSeat: ${seatLabel}` : '';
+    const title = {{ game['title'] | tojson }};
+    const location = {{ game['location'] | tojson }};
+    return `Poker game: ${title}\nWhen: {{ game['game_date'] }} at {{ game['game_time'] }}\nWhere: ${location}` + seatLine + `\nUPDATE/RSVP: ` + link;
+  }
+
+  (function() {
+    const btn = document.querySelector('.copy-text-btn');
+    if (!btn) return;
+    btn.addEventListener('click', async () => {
+      const text = inviteText('');
+      try {
+        await navigator.clipboard.writeText(text);
+        btn.textContent = 'Copied!';
+        setTimeout(() => { btn.textContent = 'Copy Invite Text'; }, 1500);
+      } catch (e) {
+        prompt('Copy this text:', text);
+      }
+    });
+  })();
+
+  (function() {
+    document.querySelectorAll('.text-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const raw = btn.getAttribute('data-phone') || '';
+        let phone = raw.replace(/[^0-9]/g, '');
+        if (!phone) return;
+        if (phone.length === 10) {
+          phone = `+1${phone}`;
+        } else if (phone.length === 11 && phone.startsWith('1')) {
+          phone = `+${phone}`;
+        }
+        const seatLabel = btn.getAttribute('data-seat-label') || '';
+        const body = encodeURIComponent(inviteText(seatLabel));
+        window.location.href = `sms:${phone}?body=${body}`;
+      });
+    });
+  })();
+
   (function() {
     const modal = document.getElementById('rsvpModal');
     const form = document.getElementById('rsvpEditForm');
     const nameInput = document.getElementById('editName');
     const statusInput = document.getElementById('editStatus');
     const etaInput = document.getElementById('editEta');
+    const phoneInput = document.getElementById('editPhone');
     const closeBtn = document.getElementById('closeModal');
     document.querySelectorAll('.edit-rsvp-btn').forEach(btn => {
       btn.addEventListener('click', () => {
@@ -275,6 +346,7 @@
         nameInput.value = btn.getAttribute('data-name') || '';
         statusInput.value = btn.getAttribute('data-status') || 'IN';
         etaInput.value = btn.getAttribute('data-eta') || '';
+        phoneInput.value = btn.getAttribute('data-phone') || '';
         form.action = `/games/{{ game['id'] }}/rsvp/${id}/update`;
         modal.style.display = 'flex';
       });

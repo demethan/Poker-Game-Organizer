@@ -76,7 +76,19 @@ def format_ts(value: str) -> str:
         return value
 
 
+def format_phone(value: Optional[str]) -> str:
+    if not value:
+        return "-"
+    digits = "".join(ch for ch in value if ch.isdigit())
+    if len(digits) == 11 and digits.startswith("1"):
+        digits = digits[1:]
+    if len(digits) != 10:
+        return value
+    return f"+1 ({digits[0:3]}) {digits[3:6]}-{digits[6:10]}"
+
+
 templates.env.filters["fmt_ts"] = format_ts
+templates.env.filters["fmt_phone"] = format_phone
 
 def get_csrf_token(request: Request) -> str:
     token = request.session.get("csrf_token")
@@ -192,6 +204,12 @@ def init_db():
         )
         """
     )
+    cur.execute("PRAGMA table_info(games)")
+    game_cols = {row["name"] for row in cur.fetchall()}
+    if "is_cancelled" not in game_cols:
+        cur.execute("ALTER TABLE games ADD COLUMN is_cancelled INTEGER DEFAULT 0")
+    if "cancelled_at" not in game_cols:
+        cur.execute("ALTER TABLE games ADD COLUMN cancelled_at TEXT")
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS rsvps (
@@ -279,6 +297,78 @@ def count_in(conn: sqlite3.Connection, game_id: int) -> int:
     return int(row["c"]) if row else 0
 
 
+def table_sizes(total_players: int) -> list:
+    if total_players <= 0:
+        return []
+    if total_players <= 9:
+        return [total_players]
+    table_count = (total_players + 8) // 9
+    base = total_players // table_count
+    remainder = total_players % table_count
+    return [base + 1 if idx < remainder else base for idx in range(table_count)]
+
+
+def table_labels(count: int) -> list:
+    labels = []
+    alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    for idx in range(count):
+        n = idx
+        label = ""
+        while True:
+            label = alphabet[n % 26] + label
+            n = n // 26 - 1
+            if n < 0:
+                break
+        labels.append(label)
+    return labels
+
+
+def seat_assignment(seat_number: Optional[int], total_players: int) -> tuple[Optional[str], Optional[int]]:
+    if not seat_number or total_players <= 0:
+        return None, None
+    sizes = table_sizes(total_players)
+    labels = table_labels(len(sizes))
+    idx = seat_number - 1
+    for label, size in zip(labels, sizes):
+        if idx < size:
+            return label, idx + 1
+        idx -= size
+    return None, None
+
+
+def seat_display(seat_number: Optional[int], total_players: int) -> Optional[str]:
+    label, seat_in_table = seat_assignment(seat_number, total_players)
+    if not label or not seat_in_table:
+        return None
+    return f"{label}{seat_in_table}"
+
+
+def seat_threshold_reached(conn: sqlite3.Connection, game_id: int, total_players: int) -> bool:
+    if total_players <= 0:
+        return False
+    return (count_in(conn, game_id) / total_players) >= 0.8
+
+
+def assign_seats_if_ready(conn: sqlite3.Connection, game_id: int, total_players: int) -> None:
+    if not seat_threshold_reached(conn, game_id, total_players):
+        return
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT id FROM rsvps WHERE game_id = ? AND status IN ('IN','LATE','HOST') AND seat_number IS NULL ORDER BY datetime(created_at) ASC, id ASC",
+        (game_id,),
+    )
+    rows = cur.fetchall()
+    if not rows:
+        return
+    seats = available_seats(conn, game_id, total_players)
+    for row in rows:
+        if not seats:
+            break
+        seat = secrets.choice(seats)
+        seats.remove(seat)
+        cur.execute("UPDATE rsvps SET seat_number = ? WHERE id = ?", (seat, row["id"]))
+
+
 def available_seats(conn: sqlite3.Connection, game_id: int, total_players: int) -> list:
     cur = conn.cursor()
     cur.execute(
@@ -301,6 +391,8 @@ def backfill_seats(conn: sqlite3.Connection) -> None:
     cur.execute("SELECT id, total_players FROM games")
     games = cur.fetchall()
     for game in games:
+        if not seat_threshold_reached(conn, game["id"], game["total_players"]):
+            continue
         cur.execute(
             "SELECT id FROM rsvps WHERE game_id = ? AND status IN ('IN','LATE','HOST') AND seat_number IS NULL ORDER BY datetime(created_at) ASC, id ASC",
             (game["id"],),
@@ -312,7 +404,8 @@ def backfill_seats(conn: sqlite3.Connection) -> None:
         for row in rows:
             if not seats:
                 break
-            seat = seats.pop(0)
+            seat = secrets.choice(seats)
+            seats.remove(seat)
             cur.execute("UPDATE rsvps SET seat_number = ? WHERE id = ?", (seat, row["id"]))
     conn.commit()
 
@@ -326,6 +419,17 @@ def clean_text(value: str, max_len: int) -> str:
     if not cleaned or len(cleaned) > max_len:
         raise ValueError("Invalid input")
     return cleaned
+
+
+def normalize_phone_10(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    digits = "".join(ch for ch in value if ch.isdigit())
+    if len(digits) == 11 and digits.startswith("1"):
+        digits = digits[1:]
+    if len(digits) != 10:
+        raise ValueError("Invalid phone")
+    return digits
 
 
 def cleanup_old_games(conn: sqlite3.Connection, organizer_id: int) -> None:
@@ -347,6 +451,10 @@ def is_game_expired(game_row) -> bool:
         return thunder_bay_now() > (local_dt + timedelta(hours=6))
     except Exception:
         return False
+
+
+def is_game_cancelled(game_row) -> bool:
+    return bool(game_row and int(game_row["is_cancelled"] or 0) == 1)
 
 
 # ------------------------
@@ -628,7 +736,6 @@ def new_game(
     game_time: str = Form(...),
     total_players: int = Form(...),
     organizer_name: str = Form(...),
-    host_seat: str = Form(None),
     csrf_token: str = Form(...),
 ):
     user_id = require_login(request)
@@ -672,26 +779,12 @@ def new_game(
 
     # Organizer counts as IN (HOST) with seat
     seat_number = None
-    if host_seat:
-        try:
-            seat_number = int(host_seat)
-        except ValueError:
-            seat_number = None
-    if seat_number is not None:
-        if seat_number < 1 or seat_number > total_players:
-            conn.close()
-            return templates.TemplateResponse(
-                "create_game.html",
-                {"request": request, "error": "Host seat must be within total players."},
-                status_code=400,
-            )
-    else:
-        seat_number = assign_random_seat(conn, game_id, total_players)
 
     cur.execute(
         "INSERT INTO rsvps (game_id, name, phone, status, seat_number, created_at) VALUES (?, ?, ?, ?, ?, ?)",
         (game_id, cleaned_organizer, None, "HOST", seat_number, now),
     )
+    assign_seats_if_ready(conn, game_id, total_players)
     conn.commit()
     conn.close()
 
@@ -713,7 +806,12 @@ def view_game(request: Request, game_id: int):
         return RedirectResponse(url="/dashboard", status_code=302)
 
     cur.execute("SELECT * FROM rsvps WHERE game_id = ? ORDER BY created_at ASC", (game_id,))
-    rsvps = cur.fetchall()
+    rsvp_rows = cur.fetchall()
+    rsvps = []
+    for row in rsvp_rows:
+        rsvp = dict(row)
+        rsvp["seat_label"] = seat_display(row["seat_number"], game["total_players"])
+        rsvps.append(rsvp)
 
     cur.execute("SELECT * FROM standby WHERE game_id = ? ORDER BY created_at ASC", (game_id,))
     standby = cur.fetchall()
@@ -760,6 +858,32 @@ def delete_game(request: Request, game_id: int, csrf_token: str = Form(...)):
     return RedirectResponse(url="/dashboard", status_code=302)
 
 
+@app.post("/games/{game_id}/cancel")
+def cancel_game(request: Request, game_id: int, csrf_token: str = Form(...)):
+    user_id = require_login(request)
+    if not user_id:
+        return RedirectResponse(url="/login", status_code=302)
+    if not verify_csrf(request, csrf_token):
+        return PlainTextResponse("Bad CSRF token", status_code=400)
+
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT id, is_cancelled FROM games WHERE id = ? AND organizer_id = ?", (game_id, user_id))
+    game = cur.fetchone()
+    if not game:
+        conn.close()
+        return RedirectResponse(url="/dashboard", status_code=302)
+
+    if int(game["is_cancelled"] or 0) == 0:
+        cur.execute(
+            "UPDATE games SET is_cancelled = 1, cancelled_at = ? WHERE id = ?",
+            (datetime.utcnow().isoformat(), game_id),
+        )
+        conn.commit()
+    conn.close()
+    return RedirectResponse(url=f"/games/{game_id}?success=Game%20cancelled", status_code=302)
+
+
 @app.post("/games/{game_id}/rsvp/{rsvp_id}/update")
 def update_rsvp(
     request: Request,
@@ -768,6 +892,7 @@ def update_rsvp(
     name: str = Form(...),
     status: str = Form(...),
     late_eta: str = Form(None),
+    phone: str = Form(None),
     csrf_token: str = Form(...),
 ):
     user_id = require_login(request)
@@ -809,15 +934,18 @@ def update_rsvp(
         return RedirectResponse(url=f"/games/{game_id}?error=Name%20already%20exists", status_code=302)
 
     new_seat = rsvp["seat_number"]
-    if status in {"IN", "LATE", "HOST"} and not new_seat:
-        new_seat = assign_random_seat(conn, game_id, game["total_players"])
     if status == "OUT":
         new_seat = None
 
+    try:
+        cleaned_phone = normalize_phone_10(phone)
+    except ValueError:
+        return RedirectResponse(url=f"/games/{game_id}?error=Invalid%20phone%20number", status_code=302)
     cur.execute(
-        "UPDATE rsvps SET name = ?, status = ?, late_eta = ?, seat_number = ? WHERE id = ?",
-        (cleaned_name, status, (late_eta or "").strip() or None, new_seat, rsvp_id),
+        "UPDATE rsvps SET name = ?, phone = ?, status = ?, late_eta = ?, seat_number = ? WHERE id = ?",
+        (cleaned_name, cleaned_phone, status, (late_eta or "").strip() or None, new_seat, rsvp_id),
     )
+    assign_seats_if_ready(conn, game_id, game["total_players"])
     conn.commit()
     conn.close()
     return RedirectResponse(url=f"/games/{game_id}?success=Updated", status_code=302)
@@ -828,6 +956,7 @@ def add_rsvp(
     request: Request,
     game_id: int,
     name: str = Form(...),
+    phone: str = Form(None),
     status: str = Form(...),
     csrf_token: str = Form(...),
 ):
@@ -868,17 +997,17 @@ def add_rsvp(
         cur.execute("UPDATE games SET total_players = ? WHERE id = ?", (total_players, game_id))
 
     seat_number = None
-    if status in {"IN", "LATE"}:
-        seat_number = assign_random_seat(conn, game_id, total_players)
-        if seat_number is None:
-            conn.close()
-            return RedirectResponse(url=f"/games/{game_id}?error=No%20available%20seats", status_code=302)
 
+    try:
+        cleaned_phone = normalize_phone_10(phone)
+    except ValueError:
+        return RedirectResponse(url=f"/games/{game_id}?error=Invalid%20phone%20number", status_code=302)
     now = datetime.utcnow().isoformat()
     cur.execute(
         "INSERT INTO rsvps (game_id, name, phone, status, late_eta, seat_number, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (game_id, cleaned_name, None, status, None, seat_number, now),
+        (game_id, cleaned_name, cleaned_phone, status, None, seat_number, now),
     )
+    assign_seats_if_ready(conn, game_id, total_players)
     conn.commit()
     conn.close()
     return RedirectResponse(url=f"/games/{game_id}?success=Added", status_code=302)
@@ -930,16 +1059,14 @@ def promote_standby(
         total_players += 1
         cur.execute("UPDATE games SET total_players = ? WHERE id = ?", (total_players, game_id))
 
-    seat_number = assign_random_seat(conn, game_id, total_players)
-    if seat_number is None:
-        conn.close()
-        return RedirectResponse(url=f"/games/{game_id}?error=No%20available%20seats", status_code=302)
+    seat_number = None
 
     now = datetime.utcnow().isoformat()
     cur.execute(
         "INSERT INTO rsvps (game_id, name, phone, status, late_eta, seat_number, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
         (game_id, cleaned_name, standby_row["phone"], "IN", None, seat_number, now),
     )
+    assign_seats_if_ready(conn, game_id, total_players)
     cur.execute("DELETE FROM standby WHERE id = ?", (standby_id,))
     conn.commit()
     conn.close()
@@ -969,6 +1096,14 @@ def game_by_code(request: Request, code: str):
         return templates.TemplateResponse(
             "game_not_found.html",
             {"request": request, "message": "Game not found."},
+            status_code=404,
+        )
+
+    if is_game_cancelled(game):
+        conn.close()
+        return templates.TemplateResponse(
+            "game_not_found.html",
+            {"request": request, "message": "This game has been cancelled."},
             status_code=404,
         )
 
@@ -1044,6 +1179,13 @@ def rsvp_game(
             {"request": request, "message": "Game not found."},
             status_code=404,
         )
+    if is_game_cancelled(game):
+        conn.close()
+        return templates.TemplateResponse(
+            "game_not_found.html",
+            {"request": request, "message": "This game has been cancelled."},
+            status_code=404,
+        )
 
     # If IN/LATE and full, show full page
     if status in {"IN", "LATE"}:
@@ -1058,7 +1200,10 @@ def rsvp_game(
         cleaned_name = clean_text(name, 50)
     except ValueError:
         return RedirectResponse(url=f"/g/{code}", status_code=302)
-    cleaned_phone = (phone or "").strip() or None
+    try:
+        cleaned_phone = normalize_phone_10(phone)
+    except ValueError:
+        return RedirectResponse(url=f"/g/{code}?error=Invalid%20phone%20number", status_code=302)
     cleaned_eta = (late_eta or "").strip() or None
     now = datetime.utcnow().isoformat()
 
@@ -1073,8 +1218,6 @@ def rsvp_game(
         seat_row = cur.fetchone()
         current_seat = seat_row["seat_number"] if seat_row else None
         new_seat = current_seat
-        if status in {"IN", "LATE"} and current_seat is None:
-            new_seat = assign_random_seat(conn, game["id"], game["total_players"])
         if status == "OUT":
             new_seat = None
         cur.execute(
@@ -1083,19 +1226,33 @@ def rsvp_game(
         )
     else:
         new_seat = None
-        if status in {"IN", "LATE"}:
-            new_seat = assign_random_seat(conn, game["id"], game["total_players"])
         cur.execute(
             "INSERT INTO rsvps (game_id, name, phone, status, late_eta, seat_number, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (game["id"], cleaned_name, cleaned_phone, status, cleaned_eta, new_seat, now),
         )
-    seat_to_show = new_seat
+    assign_seats_if_ready(conn, game["id"], game["total_players"])
+    cur.execute(
+        "SELECT seat_number FROM rsvps WHERE game_id = ? AND LOWER(name) = LOWER(?)",
+        (game["id"], cleaned_name),
+    )
+    seat_row = cur.fetchone()
+    seat_to_show = seat_row["seat_number"] if seat_row else None
+    table_label, seat_in_table = seat_assignment(seat_to_show, game["total_players"])
     conn.commit()
     conn.close()
 
     return templates.TemplateResponse(
         "rsvp_thanks.html",
-        {"request": request, "game": game, "status": status, "late_eta": late_eta, "seat_number": seat_to_show},
+        {
+            "request": request,
+            "game": game,
+            "status": status,
+            "late_eta": late_eta,
+            "seat_number": seat_to_show,
+            "table_label": table_label,
+            "seat_in_table": seat_in_table,
+            "seat_label": seat_display(seat_to_show, game["total_players"]),
+        },
     )
 
 
@@ -1120,14 +1277,25 @@ def standby_game(
             {"request": request, "message": "Game not found."},
             status_code=404,
         )
+    if is_game_cancelled(game):
+        conn.close()
+        return templates.TemplateResponse(
+            "game_not_found.html",
+            {"request": request, "message": "This game has been cancelled."},
+            status_code=404,
+        )
 
     try:
         cleaned_name = clean_text(name, 50)
     except ValueError:
         return RedirectResponse(url=f"/g/{code}", status_code=302)
+    try:
+        cleaned_phone = normalize_phone_10(phone)
+    except ValueError:
+        return RedirectResponse(url=f"/g/{code}?error=Invalid%20phone%20number", status_code=302)
     cur.execute(
         "INSERT INTO standby (game_id, name, phone, created_at) VALUES (?, ?, ?, ?)",
-        (game["id"], cleaned_name, (phone or "").strip() or None, datetime.utcnow().isoformat()),
+        (game["id"], cleaned_name, cleaned_phone, datetime.utcnow().isoformat()),
     )
     cur.execute("SELECT COUNT(*) AS c FROM standby WHERE game_id = ?", (game["id"],))
     position = int(cur.fetchone()["c"])
