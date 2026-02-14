@@ -6,7 +6,11 @@
   <p>ETA: <strong>{{ late_eta }}</strong></p>
 {% endif %}
 {% if seat_number %}
-  <p>Your seat number: <strong>#{{ seat_number }}</strong></p>
+  {% if table_label and seat_in_table %}
+    <p>Your seat: <strong>Table {{ table_label }}, Seat {{ seat_in_table }}</strong></p>
+  {% else %}
+    <p>Your seat number: <strong>#{{ seat_number }}</strong></p>
+  {% endif %}
 {% endif %}
 <p>{{ game['title'] }} • {{ game['game_date'] }} at {{ game['game_time'] }}</p>
 <script>

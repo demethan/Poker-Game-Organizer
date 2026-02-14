@@ -16,6 +16,7 @@
     <div class="row">
       <span class="badge">Total Players: {{ game['total_players'] }}</span>
       <span class="badge">Code: {{ game['code'] }}</span>
+      {% if game['is_cancelled'] %}<span class="badge">Cancelled</span>{% endif %}
     </div>
     <div class="row" style="margin-top: 12px;">
       <a class="btn secondary" href="/games/{{ game['id'] }}">View</a>
