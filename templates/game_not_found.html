@@ -1,6 +1,20 @@
 {% extends "base.html" %}
 {% block content %}
+{% set msg = (message or '') %}
+{% if 'cancelled' in msg|lower %}
+<h1>Game Cancelled</h1>
+<p>The organizer has cancelled this game.</p>
+{% elif 'expired' in msg|lower %}
+<h1>Game Expired</h1>
+<p>This game link has expired.</p>
+{% elif 'missing game code' in msg|lower %}
+<h1>Invalid Invite Link</h1>
+<p>This invite link is missing a game code.</p>
+{% else %}
 <h1>Game Not Found</h1>
 <p>{{ message }}</p>
+{% endif %}
+{% if 'cancelled' not in msg|lower and 'expired' not in msg|lower and 'missing game code' not in msg|lower %}
 <p>The game might have been deleted or the date has passed.</p>
+{% endif %}
 {% endblock %}

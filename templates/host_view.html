@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>{{ game['title'] }} - Host View</h1>
+<p class="game-meta">
+  <span class="game-datetime">🗓️ {{ game['game_date'] }} at {{ game['game_time'] | fmt_game_time }}</span>
+  <span class="game-location">📍 {{ game['location'] }}</span>
+</p>
+<div class="row" style="margin-bottom: 12px;">
+  <span class="badge" id="inBadge">IN: {{ in_count }}</span>
+  <span class="badge" id="lateBadge">LATE: {{ late_count }}</span>
+  <span class="badge">Seats fill after 80%+ are IN/LATE/HOST</span>
+</div>
+
+<table class="table rsvp-table" id="hostTable">
+  <thead>
+    <tr>
+      <th>Name</th>
+      <th>Status</th>
+      <th>ETA</th>
+      <th>Seat</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for p in players %}
+    <tr data-status="{{ p['status'] }}">
+      <td data-label="Name">{{ p['name'] }}</td>
+      <td data-label="Status">{{ p['status'] }}</td>
+      <td data-label="ETA">{{ p['late_eta'] or '-' }}</td>
+      <td data-label="Seat" data-seat-number="{{ p['seat_number'] or '' }}">{{ p['seat_label'] or '-' }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+<script>
+  (function() {
+    const tbody = document.querySelector('#hostTable tbody');
+    const inBadge = document.getElementById('inBadge');
+    const lateBadge = document.getElementById('lateBadge');
+    if (!tbody || !inBadge || !lateBadge) return;
+
+    function esc(value) {
+      const s = String(value || '');
+      return s
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function renderRows(players) {
+      const html = (players || []).map(p => {
+        const seatNumber = p.seat_number == null ? '' : String(p.seat_number);
+        const seatLabel = p.seat_label || '-';
+        const lateEta = p.late_eta || '-';
+        return `<tr data-status="${esc(p.status)}">
+          <td data-label="Name">${esc(p.name)}</td>
+          <td data-label="Status">${esc(p.status)}</td>
+          <td data-label="ETA">${esc(lateEta)}</td>
+          <td data-label="Seat" data-seat-number="${esc(seatNumber)}">${esc(seatLabel)}</td>
+        </tr>`;
+      }).join('');
+      tbody.innerHTML = html;
+    }
+
+    async function refresh() {
+      try {
+        const response = await fetch(`/h/{{ game['host_code'] }}/snapshot`, { headers: { Accept: 'application/json' } });
+        if (!response.ok) return;
+        const data = await response.json();
+        inBadge.textContent = `IN: ${data.in_count || 0}`;
+        lateBadge.textContent = `LATE: ${data.late_count || 0}`;
+        renderRows(data.players || []);
+      } catch (e) {
+        // Ignore transient network failures.
+      }
+    }
+
+    setInterval(refresh, 5000);
+    refresh();
+  })();
+</script>
+{% endblock %}

@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>MFA Verification</h1>
+<p>Enter the 6-digit code sent to your phone for {{ pending_name }}.</p>
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+{% if success %}<div class="notice notice-strong">{{ success }}</div>{% endif %}
+<form method="post" class="grid grid-2">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+  <div>
+    <label>Code</label>
+    <input type="text" name="code" inputmode="numeric" pattern="[0-9]*" maxlength="6" required>
+  </div>
+  <div>
+    <label style="display:flex; align-items:center; gap:8px; margin-top:26px;">
+      <input type="checkbox" name="trust_device" value="1" checked style="width:auto;">
+      Trust this device for 30 days
+    </label>
+  </div>
+  <div>
+    <button class="btn" type="submit">Verify</button>
+  </div>
+</form>
+<form method="post" action="/mfa/resend" style="margin-top:10px;">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+  <button class="btn secondary" type="submit">Resend Code</button>
+</form>
+{% endblock %}

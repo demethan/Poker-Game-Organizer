@@ -12,6 +12,7 @@
       <th>Username</th>
       <th>Email</th>
       <th>Games</th>
+      <th>MFA</th>
       <th>Status</th>
       <th>Actions</th>
     </tr>
@@ -23,6 +24,7 @@
       <td>{{ u['username'] or '-' }}</td>
       <td>{{ u['email'] }}</td>
       <td>{{ u['game_count'] }}</td>
+      <td>{{ 'ON' if u['mfa_enabled'] else 'OFF' }}</td>
       <td>{{ 'Disabled' if u['is_disabled'] else 'Active' }}</td>
       <td>
         <div class="row">

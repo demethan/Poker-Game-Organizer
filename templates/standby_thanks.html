@@ -3,7 +3,7 @@
 <h1>You're on standby</h1>
 <p>The organizer will contact you if a seat opens.</p>
 <p>Your position: <strong>#{{ position }}</strong></p>
-<p>{{ game['title'] }} • {{ game['game_date'] }} at {{ game['game_time'] }}</p>
+<p>{{ game['title'] }} • {{ game['game_date'] }} at {{ game['game_time'] | fmt_game_time }}</p>
 <script>
   localStorage.setItem('poker_standby_{{ game["code"] }}', '1');
   localStorage.setItem('poker_standby_pos_{{ game["code"] }}', '{{ position }}');

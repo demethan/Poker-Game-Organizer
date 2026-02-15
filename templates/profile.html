@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Profile</h1>
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+{% if success %}<div class="notice notice-strong">{{ success }}</div>{% endif %}
+
+<div class="card">
+  <h3>Account</h3>
+  <p><strong>Name:</strong> {{ user['name'] }}</p>
+  <p><strong>Email:</strong> {{ user['email'] }}</p>
+</div>
+
+<div class="card">
+  <h3>Phone & MFA</h3>
+  <form method="post" class="grid grid-2">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <input type="hidden" name="action" value="send_phone_code">
+    <div>
+      <label>Phone</label>
+      <input type="tel" name="phone" autocomplete="tel" placeholder="+1 (807) 555-1234" value="{{ user['phone'] or '' }}">
+    </div>
+    <div>
+      <button class="btn" type="submit">Send Verification Code</button>
+    </div>
+  </form>
+
+  <form method="post" class="grid grid-2" style="margin-top:10px;">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <input type="hidden" name="action" value="verify_phone">
+    <div>
+      <label>Verification Code</label>
+      <input type="text" name="verification_code" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="6-digit code">
+      <input type="hidden" name="phone" value="{{ user['phone'] or '' }}">
+    </div>
+    <div>
+      <button class="btn secondary" type="submit">Verify Phone</button>
+    </div>
+  </form>
+
+  <p style="margin-top:8px;">
+    Phone status:
+    {% if user['phone_verified_at'] %}
+      <span class="badge">Verified</span>
+    {% else %}
+      <span class="badge">Not Verified</span>
+    {% endif %}
+  </p>
+
+  <form method="post" style="margin-top:10px;">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <input type="hidden" name="action" value="set_mfa">
+    <input type="hidden" name="mfa_enabled" value="{% if user['mfa_enabled'] %}0{% else %}1{% endif %}">
+    <button class="btn secondary" type="submit">
+      {% if user['mfa_enabled'] %}Disable MFA{% else %}Enable MFA{% endif %}
+    </button>
+    <span class="badge">MFA: {% if user['mfa_enabled'] %}ON{% else %}OFF{% endif %}</span>
+  </form>
+</div>
+
+<div class="card">
+  <h3>Change Password</h3>
+  <form method="post" class="grid grid-2">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <input type="hidden" name="action" value="change_password">
+    <div>
+      <label>Current Password</label>
+      <input type="password" name="current_password" required>
+    </div>
+    <div>
+      <label>New Password</label>
+      <input type="password" name="new_password" required>
+    </div>
+    <div>
+      <label>Confirm New Password</label>
+      <input type="password" name="confirm_password" required>
+    </div>
+    <div>
+      <button class="btn" type="submit">Update Password</button>
+    </div>
+  </form>
+</div>
+{% endblock %}

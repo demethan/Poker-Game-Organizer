@@ -4,7 +4,12 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{ title if title else "Luck's Poker Game Organizer" }}</title>
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-app-32.png">
+  <link rel="icon" type="image/svg+xml" href="/static/favicon-app.svg">
+  <link rel="alternate icon" href="/static/favicon-app.svg">
+  <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon-app.png">
   <link rel="stylesheet" href="/static/styles.css">
+  {% block extra_head %}{% endblock %}
 </head>
 <body>
   <div class="app">
@@ -14,6 +19,7 @@
       <nav class="nav">
         <a href="/dashboard">Dashboard</a>
         <a href="/games/new">New Game</a>
+        <a href="/profile">Profile</a>
         {% if request.session.get('is_admin') %}
         <a href="/admin">Admin</a>
         {% endif %}

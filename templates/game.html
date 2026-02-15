@@ -1,16 +1,55 @@
 {% extends "base.html" %}
+{% block extra_head %}
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-invite-32.png">
+  <link rel="icon" type="image/svg+xml" href="/static/favicon-invite.svg">
+  <link rel="alternate icon" href="/static/favicon-invite.svg">
+  <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon-invite.png">
+{% endblock %}
 {% block content %}
+<style>
+@media (max-width: 640px) {
+  .topbar {
+    display: none;
+  }
+  .content {
+    margin-top: 0;
+  }
+  h1 {
+    font-size: 1.25rem;
+    line-height: 1.2;
+    margin-bottom: 10px;
+  }
+}
+</style>
 <h1>{{ game['title'] }}</h1>
-<p class="game-meta">
-  <span class="game-datetime">🗓️ {{ game['game_date'] }} at {{ game['game_time'] }}</span>
+{% if request.query_params.get("error") %}
+  <div class="error" id="inviteFlashError">{{ request.query_params.get("error") }}</div>
+{% endif %}
+<p class="game-meta invite-meta">
+  <span class="game-datetime">🗓️ {{ game['game_date'] }} at {{ game['game_time'] | fmt_game_time }}</span>
   <span class="game-location">
     📍 <a class="map-link" href="https://www.google.com/maps/search/?api=1&query={{ game['location'] | urlencode }}" target="_blank" rel="noopener noreferrer">{{ game['location'] }}</a>
   </span>
 </p>
-<div class="card">
-  <h3>Players IN</h3>
-  {% if (in_players and in_players|length > 0) or (late_players and late_players|length > 0) %}
-    <div class="row">
+<div class="card invite-status-card">
+  <div class="invite-stats">
+    <div class="invite-stat">
+      <span class="invite-stat-label">IN</span>
+      <strong>{{ (in_players|length) + (late_players|length) + (1 if host_name else 0) }}</strong>
+    </div>
+    <div class="invite-stat">
+      <span class="invite-stat-label">OUT</span>
+      <strong>{{ out_count }}</strong>
+    </div>
+    <div class="invite-stat">
+      <span class="invite-stat-label">SEATS</span>
+      <strong>{{ game['total_players'] }}</strong>
+    </div>
+  </div>
+  {% if (in_players and in_players|length > 0) or (late_players and late_players|length > 0) or host_name %}
+  <details class="invite-details">
+    <summary>View player list</summary>
+    <div class="row" style="margin-top:10px;">
       {% if host_name %}
         <span class="badge">🏠 {{ host_name }}</span>
       {% endif %}
@@ -21,86 +60,271 @@
         <span class="badge">⏰ {{ name }}</span>
       {% endfor %}
     </div>
-  {% else %}
-    <p>No one has joined yet.</p>
+  </details>
   {% endif %}
 </div>
-
-<div class="card">
-  <h3>Players OUT</h3>
-  <div class="row">
-    <span class="badge">{{ out_count }}</span>
-  </div>
+<div class="invite-actions invite-actions-top">
+  <button class="btn invite-btn invite-btn-in" type="button" onclick="submitStatus('IN')">IN</button>
+  <button class="btn danger invite-btn invite-btn-out" type="button" onclick="submitStatus('OUT')">OUT</button>
+  <button class="btn secondary invite-btn invite-btn-late" type="button" onclick="openLateModal()">LATE</button>
 </div>
 <div id="alreadyVoted" class="notice notice-strong" style="display:none;">
-  You already responded to this game. You can update your status below.
+  You already responded to this game. You can update your status above.
 </div>
 
 <div class="card">
-  <div class="row" style="align-items:center;">
-    <h3 style="margin:0;">RSVP</h3>
-    <button type="button" class="info-btn" onclick="toggleInfo()" aria-label="Info">i</button>
-  </div>
   <div id="infoPopup" class="info-popup" style="display:none;">
-    We can’t read your device phone number from the browser. Please enter your info once; it will be remembered on this device.
+    We can’t read your device phone number from the browser. Please enter it once; it will be remembered on this device.
   </div>
-  <form method="post" action="/g/{{ game['code'] }}/rsvp" id="rsvpForm" class="grid grid-2">
+  <form method="post" action="/g/{{ game['code'] }}/rsvp" id="rsvpForm" class="invite-form">
     <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <input type="hidden" name="rsvp_token" id="rsvpToken" value="">
+    <input type="hidden" name="verification_code" id="verification_code" value="">
     <div>
-      <label>Name</label>
-      <input type="text" name="name" id="name" required>
+      <div class="invite-label-row">
+        <label style="margin:0;">Name</label>
+        <button type="button" class="info-btn info-btn-inline" onclick="toggleInfo()" aria-label="Info">ℹ️</button>
+      </div>
+      <input type="text" name="name" id="name" autocomplete="name" placeholder="Your name" required>
     </div>
     <div>
-      <label>Cell (optional)</label>
-      <input type="tel" name="phone" id="phone" disabled placeholder="Coming soon">
+      <label>
+        Cell (optional)
+        <span id="phoneVerifyBadge" class="badge" style="margin-left:6px; display:none;"></span>
+        <span style="font-size:11px; color:#94a3b8;">Used for verification and SMS confirmations.</span>
+      </label>
+      <input type="tel" name="phone" id="phone" autocomplete="tel" placeholder="+1 (807) 555-1234">
     </div>
     <div id="lateEtaWrap" style="display:none;">
       <label>ETA (when you'll arrive)</label>
       <input type="time" name="late_eta" id="late_eta">
     </div>
     <input type="hidden" name="status" id="status" value="IN">
-    <div class="row">
-      <button class="btn" type="button" onclick="submitStatus('IN')">IN</button>
-      <button class="btn secondary" type="button" onclick="submitStatus('LATE')">LATE</button>
-      <button class="btn danger" type="button" onclick="submitStatus('OUT')">OUT</button>
-    </div>
   </form>
 </div>
+<div id="lateModal" class="modal" style="display:none;">
+  <div class="modal-card">
+    <h3>When Will You Arrive?</h3>
+    <input type="time" id="lateModalTime">
+    <div class="row" style="margin-top:12px;">
+      <button class="btn" type="button" onclick="confirmLateTime()">OK</button>
+      <button class="btn secondary" type="button" onclick="closeLateModal()">Cancel</button>
+    </div>
+  </div>
+</div>
+{% if twilio_enabled %}
+<div id="verifyModal" class="modal" style="{% if verify_required %}display:flex;{% else %}display:none;{% endif %}">
+  <div class="modal-card">
+    <h3>Verify Your Phone</h3>
+    <p style="margin-bottom:10px;">Enter the 6-digit code sent by text.</p>
+    <input type="text" id="verifyCodeInput" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="6-digit code">
+    <div class="row" style="margin-top:12px;">
+      <button class="btn" type="button" onclick="applyVerifyCode()">Continue</button>
+      <button class="btn secondary" type="button" onclick="closeVerifyModal()">Close</button>
+    </div>
+  </div>
+</div>
+{% endif %}
 
 <script>
 (function() {
-  const nameInput = document.getElementById('name');
-  const savedName = localStorage.getItem('poker_name');
-  if (savedName) nameInput.value = savedName;
+  const flash = document.getElementById('inviteFlashError');
+  if (!flash) return;
+  setTimeout(() => { flash.style.display = 'none'; }, 5000);
+  try {
+    const url = new URL(window.location.href);
+    if (url.searchParams.has('error')) {
+      url.searchParams.delete('error');
+      const next = url.pathname + (url.search ? url.search : '') + (url.hash ? url.hash : '');
+      window.history.replaceState({}, '', next);
+    }
+  } catch (e) {}
 })();
 
-function submitStatus(status) {
+(function() {
+  const nameInput = document.getElementById('name');
+  const phoneInput = document.getElementById('phone');
+  const verifyBadge = document.getElementById('phoneVerifyBadge');
+  const tokenInput = document.getElementById('rsvpToken');
+  const csrfInput = document.querySelector('#rsvpForm input[name="csrf_token"]');
+  const savedName = localStorage.getItem('poker_name');
+  const savedPhone = localStorage.getItem('poker_phone');
+  const tokenKey = 'poker_rsvp_token_{{ game["code"] }}';
+  let savedToken = localStorage.getItem(tokenKey);
+
+  function createToken() {
+    if (window.crypto && window.crypto.getRandomValues) {
+      const bytes = new Uint8Array(16);
+      window.crypto.getRandomValues(bytes);
+      return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+    }
+    return (Math.random().toString(36).slice(2) + Date.now().toString(36)).slice(0, 32);
+  }
+
+  if (!savedToken) {
+    savedToken = createToken();
+    localStorage.setItem(tokenKey, savedToken);
+  }
+  if (tokenInput) tokenInput.value = savedToken;
+
+  if (savedName) nameInput.value = savedName;
+  if (savedPhone) phoneInput.value = savedPhone;
+
+  function updatePhoneVerifyBadge() {
+    if (!verifyBadge || !phoneInput) return;
+    const hasPhone = !!(phoneInput.value || '').trim();
+    if (!hasPhone) {
+      verifyBadge.style.display = 'none';
+      verifyBadge.textContent = '';
+      return;
+    }
+    const verifyRequired = {{ verify_required | tojson }};
+    verifyBadge.style.display = 'inline-flex';
+    if (verifyRequired) {
+      verifyBadge.textContent = 'Not verified';
+    } else {
+      verifyBadge.textContent = '✓ Verified';
+    }
+  }
+  phoneInput && phoneInput.addEventListener('input', updatePhoneVerifyBadge);
+
+  // If organizer corrected phone data, sync the latest phone back to this device.
+  async function syncContactFromServer(name) {
+    if (!name || !csrfInput?.value) return;
+    try {
+      const body = new URLSearchParams();
+      body.set('name', name || '');
+      body.set('rsvp_token', savedToken || '');
+      body.set('csrf_token', csrfInput.value);
+      const response = await fetch('/g/{{ game["code"] }}/contact', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: body.toString(),
+      });
+      if (!response.ok) return;
+      const data = await response.json();
+      if (data && data.phone && phoneInput) {
+        phoneInput.value = data.phone;
+        localStorage.setItem('poker_phone', data.phone);
+      }
+      if (data && data.name && nameInput) {
+        nameInput.value = data.name;
+        localStorage.setItem('poker_name', data.name);
+      }
+    } catch (e) {
+      // Ignore network/transient errors.
+    }
+  }
+
+  if (savedName) {
+    syncContactFromServer(savedName);
+  }
+  updatePhoneVerifyBadge();
+})();
+
+function submitStatus(status, skipLatePrompt) {
   const nameInput = document.getElementById('name');
   if (!nameInput.value.trim()) {
     nameInput.focus();
     return;
   }
-  const etaWrap = document.getElementById('lateEtaWrap');
   const etaInput = document.getElementById('late_eta');
   if (status === 'LATE') {
-    etaWrap.style.display = 'block';
-    if (!etaInput.value) {
-      etaInput.focus();
+    if (!skipLatePrompt) {
+      openLateModal();
       return;
     }
   } else {
-    etaWrap.style.display = 'none';
     etaInput.value = '';
   }
   localStorage.setItem('poker_name', nameInput.value.trim());
+  const phoneInput = document.getElementById('phone');
+  const verifyInput = document.getElementById('verification_code');
+  const verifyModal = document.getElementById('verifyModal');
+  const verifyRequired = {{ verify_required | tojson }};
+  if (verifyRequired && verifyModal && (phoneInput?.value || '').trim()) {
+    if (!((verifyInput?.value || '').trim())) {
+      window._pendingStatus = status;
+      openVerifyModal();
+      return;
+    }
+  }
+  localStorage.setItem('poker_phone', (phoneInput?.value || '').trim());
   localStorage.setItem('poker_rsvp_{{ game["code"] }}', status);
   document.getElementById('status').value = status;
   document.getElementById('rsvpForm').submit();
 }
 
+function openLateModal() {
+  const modal = document.getElementById('lateModal');
+  const modalTime = document.getElementById('lateModalTime');
+  const etaInput = document.getElementById('late_eta');
+  if (!modal) return;
+  if (modalTime) {
+    modalTime.value = etaInput?.value || '';
+    modalTime.focus();
+  }
+  modal.style.display = 'flex';
+}
+
+function closeLateModal() {
+  const modal = document.getElementById('lateModal');
+  if (!modal) return;
+  modal.style.display = 'none';
+}
+
+function confirmLateTime() {
+  const modalTime = document.getElementById('lateModalTime');
+  const etaInput = document.getElementById('late_eta');
+  const value = (modalTime?.value || '').trim();
+  if (!value) {
+    modalTime && modalTime.focus();
+    return;
+  }
+  if (etaInput) etaInput.value = value;
+  closeLateModal();
+  submitStatus('LATE', true);
+}
+
 function toggleInfo() {
   const el = document.getElementById('infoPopup');
   el.style.display = (el.style.display === 'none' || !el.style.display) ? 'block' : 'none';
+}
+
+function openVerifyModal() {
+  const modal = document.getElementById('verifyModal');
+  const input = document.getElementById('verifyCodeInput');
+  if (!modal) return;
+  modal.style.display = 'flex';
+  if (input) {
+    input.value = document.getElementById('verification_code')?.value || '';
+    input.focus();
+  }
+}
+
+function closeVerifyModal() {
+  const modal = document.getElementById('verifyModal');
+  if (!modal) return;
+  modal.style.display = 'none';
+}
+
+function applyVerifyCode() {
+  const input = document.getElementById('verifyCodeInput');
+  const hidden = document.getElementById('verification_code');
+  const code = (input?.value || '').trim();
+  if (!code) {
+    input && input.focus();
+    return;
+  }
+  if (hidden) hidden.value = code;
+  closeVerifyModal();
+  const statusInput = document.getElementById('status');
+  const statusKey = 'poker_rsvp_{{ game["code"] }}';
+  const rememberedStatus = localStorage.getItem(statusKey) || '';
+  const nextStatus = window._pendingStatus || rememberedStatus || (statusInput?.value || 'IN');
+  if (statusInput) statusInput.value = nextStatus;
+  window._pendingStatus = null;
+  document.getElementById('rsvpForm').submit();
 }
 
 (function() {

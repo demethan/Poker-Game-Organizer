@@ -7,11 +7,11 @@
   <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
   <div>
     <label>Game Title</label>
-    <input type="text" name="title" placeholder="Friday Night Poker" required value="{{ last_game['title'] if last_game else '' }}">
+    <input type="text" name="title" list="titleOptions" autocomplete="on" placeholder="Friday Night Poker" required value="{{ last_game['title'] if last_game else '' }}">
   </div>
   <div>
     <label>Location</label>
-    <input type="text" name="location" placeholder="123 Main St" required value="{{ last_game['location'] if last_game else '' }}">
+    <input type="text" name="location" list="locationOptions" autocomplete="street-address" placeholder="123 Main St" required value="{{ last_game['location'] if last_game else '' }}">
   </div>
   <div>
     <label>Date</label>
@@ -23,21 +23,52 @@
   </div>
   <div>
     <label>Total Players</label>
-    <input type="number" name="total_players" min="1" required value="{{ last_game['total_players'] if last_game else '' }}">
+    <input type="number" name="total_players" list="totalPlayersOptions" min="1" required value="{{ last_game['total_players'] if last_game else '' }}">
   </div>
   <div>
     <label>Organizer Display Name</label>
-    <input type="text" name="organizer_name" required value="{{ last_organizer_name if last_organizer_name else '' }}">
+    <input type="text" name="organizer_name" list="organizerNameOptions" autocomplete="name" required value="{{ last_organizer_name if last_organizer_name else '' }}">
+  </div>
+  <div>
+    <label>Organizer Cell (optional)</label>
+    <input type="tel" name="organizer_phone" autocomplete="tel" placeholder="+1 (807) 555-1234" value="{{ last_organizer_phone if last_organizer_phone else '' }}">
+  </div>
+  <div>
+    <label style="display:flex; align-items:center; gap:8px; margin-top:26px;">
+      <input type="checkbox" name="multiple_tables" value="1" {% if last_game and last_game['multiple_tables'] %}checked{% endif %} style="width:auto;">
+      Multiple Table Mode
+    </label>
   </div>
   <div>
     <button class="btn" type="submit">Create Game</button>
   </div>
 </form>
 
+<datalist id="titleOptions">
+  {% for value in title_suggestions %}
+  <option value="{{ value }}">
+  {% endfor %}
+</datalist>
+<datalist id="locationOptions">
+  {% for value in location_suggestions %}
+  <option value="{{ value }}">
+  {% endfor %}
+</datalist>
+<datalist id="totalPlayersOptions">
+  {% for value in total_player_suggestions %}
+  <option value="{{ value }}">
+  {% endfor %}
+</datalist>
+<datalist id="organizerNameOptions">
+  {% for value in organizer_name_suggestions %}
+  <option value="{{ value }}">
+  {% endfor %}
+</datalist>
+
 <link rel="stylesheet" href="/static/flatpickr.min.css">
 <script src="/static/flatpickr.min.js"></script>
 <script>
   flatpickr('.date-picker', { dateFormat: 'Y-m-d', disableMobile: true });
-  flatpickr('.time-picker', { enableTime: true, noCalendar: true, dateFormat: 'H:i', time_24hr: false, disableMobile: true });
+  flatpickr('.time-picker', { enableTime: true, noCalendar: true, dateFormat: 'H:i', altInput: true, altFormat: 'h:i K', disableMobile: true });
 </script>
 {% endblock %}

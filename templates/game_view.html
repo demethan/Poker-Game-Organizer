@@ -1,40 +1,77 @@
 {% extends "base.html" %}
 {% block content %}
-<h1>{{ game['title'] }}</h1>
+<div class="organizer-view">
+<div class="organizer-titlebar">
+  <h1 class="game-title">{{ game['title'] }}</h1>
+  <form method="post" action="/games/{{ game['id'] }}/cancel" onsubmit="return confirm('{% if game['is_cancelled'] %}Reopen this game? This also cancels any pending cancellation SMS and invitees will be able to RSVP again.{% else %}Are you sure? Cancelling will schedule SMS to all players/standby in 2 minutes. Reopen within 2 minutes to stop those texts.{% endif %}');">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <button class="cancel-toggle{% if game['is_cancelled'] %} is-on{% endif %}" type="submit" aria-pressed="{% if game['is_cancelled'] %}true{% else %}false{% endif %}">
+      <span class="cancel-toggle-track" aria-hidden="true">
+        <span class="cancel-toggle-knob"></span>
+      </span>
+      <span class="cancel-toggle-text">{% if game['is_cancelled'] %}Cancelled{% else %}Active{% endif %}</span>
+    </button>
+  </form>
+</div>
 {% if error %}<div class="error">{{ error }}</div>{% endif %}
-{% if success %}<div class="notice notice-strong">{{ success }}</div>{% endif %}
+{% if success %}<div class="notice notice-strong" id="flashSuccess">{{ success }}</div>{% endif %}
 {% if game['is_cancelled'] %}
 <div class="error">This game is cancelled. Invitees will see this game as cancelled.</div>
 {% endif %}
 <p class="game-meta">
-  <span class="game-datetime">🗓️ {{ game['game_date'] }} at {{ game['game_time'] }}</span>
+  <span class="game-datetime">🗓️ {{ game['game_date'] }} at {{ game['game_time'] | fmt_game_time }}</span>
   <span class="game-location">
-    📍 {{ game['location'] }}
+    📍 <span id="gameLocationText">{{ game['location'] }}</span>
+    <button type="button" id="openDetailsModal" class="btn secondary action-pill">Change</button>
   </span>
 </p>
-<div class="row">
-  <button class="btn secondary copy-btn" type="button" data-link="https://{{ request.headers.get('host') }}/game?g={{ game['code'] }}">Copy Invite Link</button>
-  <button class="btn secondary copy-text-btn" type="button">Copy Invite Text</button>
-  <span class="badge">Invite Link: /game?g={{ game['code'] }}</span>
-  <span class="badge">Players IN: {{ in_count }} / {{ game['total_players'] }}</span>
+<div class="row organizer-actions">
+  <button class="btn secondary copy-btn invite-link-btn" type="button" data-link="https://{{ request.headers.get('host') }}/game?g={{ game['code'] }}">Copy Invite Link</button>
+  <button class="btn secondary copy-text-btn invite-text-btn" type="button">Copy Invite Text</button>
+  <form method="post" action="/games/{{ game['id'] }}/sms-toggle" onsubmit="return confirm('{% if game['sms_enabled'] %}Disable all outbound SMS for this game?{% else %}Enable outbound SMS for this game?{% endif %}');">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <button class="btn secondary" type="submit">{% if game['sms_enabled'] %}Disable SMS{% else %}Enable SMS{% endif %}</button>
+  </form>
+  <span class="badge invite-link-badge">Invite Link: /game?g={{ game['code'] }}</span>
+  <span class="badge" id="playersInBadge">Players IN: {{ in_count }} / {{ game['total_players'] }}</span>
+  <span class="badge">SMS: {% if game['sms_enabled'] %}ON{% else %}OFF{% endif %}</span>
+  <button type="button" id="openAddPlayerModal" class="btn secondary action-pill">Add Player</button>
   {% if game['is_cancelled'] %}<span class="badge">Status: Cancelled</span>{% endif %}
 </div>
-<div class="row" style="margin-top: 12px;">
-  {% if not game['is_cancelled'] %}
-  <form method="post" action="/games/{{ game['id'] }}/cancel" onsubmit="return confirm('Cancel this game? Invitees will see it as cancelled.');">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
-    <button class="btn danger" type="submit">Cancel Game</button>
-  </form>
-  {% endif %}
-  <form method="post" action="/games/{{ game['id'] }}/delete" onsubmit="return confirm('Delete this game and all RSVPs?');">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
-    <button class="btn danger" type="submit">Delete Game</button>
-  </form>
+
+<div id="detailsModal" class="modal" style="display:none;">
+  <div class="modal-card">
+    <h3>Edit Game Details</h3>
+    <form method="post" action="/games/{{ game['id'] }}/details/update" id="gameDetailsForm" class="grid">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+      <div>
+        <label>Address</label>
+        <input type="text" name="location" required value="{{ game['location'] }}">
+      </div>
+      <div>
+        <label>Date</label>
+        <input type="text" name="game_date" class="date-picker" required value="{{ game['game_date'] }}">
+      </div>
+      <div>
+        <label>Time</label>
+        <input type="text" name="game_time" class="time-picker" required value="{{ game['game_time'] }}">
+      </div>
+      <div>
+        <label style="display:flex; align-items:center; gap:8px; margin:0;">
+          <input type="checkbox" name="multiple_tables" value="1" {% if game['multiple_tables'] %}checked{% endif %} style="width:auto;">
+          Multiple Table Mode
+        </label>
+      </div>
+      <div class="row">
+        <span class="badge" id="detailsSaveStatus" style="display:none;"></span>
+        <button class="btn secondary" type="button" id="closeDetailsModal">Close</button>
+      </div>
+    </form>
+  </div>
 </div>
 
-<h2>RSVPs</h2>
 <div class="rotate-pill" aria-hidden="true">Rotate to landscape to edit RSVPs</div>
-<div class="row" style="margin-bottom: 12px;">
+<div class="row organizer-filter-row" style="margin-bottom: 12px;">
   <span class="badge" id="activeFilter" style="display:none;">Filter: <span id="activeFilterValue"></span> (tap to clear)</span>
 </div>
 <table class="table rsvp-table" id="rsvpTable">
@@ -53,7 +90,7 @@
   <tbody>
   {% for r in rsvps %}
     <tr data-status="{{ r['status'] }}">
-      <td data-label="Name">{{ r['name'] }}</td>
+      <td data-label="Name" title="{{ r['name'] }}">{{ r['name'] }}</td>
       <td class="hide-mobile" data-label="Cell">{{ r['phone'] | fmt_phone }}</td>
       <td data-label="Seat" data-seat-number="{{ r['seat_number'] or '' }}">{{ r['seat_label'] or '-' }}</td>
       <td data-label="Status">{{ r['status'] }}</td>
@@ -81,17 +118,34 @@
   </tbody>
 </table>
 
-<form method="post" action="/games/{{ game['id'] }}/rsvp/add" class="row" style="margin-top: 12px; gap: 8px; align-items: center;">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
-  <input type="text" name="name" placeholder="Name" required>
-  <input type="tel" name="phone" placeholder="+1 (807) 555-1234">
-  <select name="status" required>
-    <option value="IN">IN</option>
-    <option value="LATE">LATE</option>
-    <option value="OUT">OUT</option>
-  </select>
-  <button class="btn" type="submit">Add Player</button>
-</form>
+<div id="addPlayerModal" class="modal" style="display:none;">
+  <div class="modal-card">
+    <h3>Add Player</h3>
+    <form method="post" action="/games/{{ game['id'] }}/rsvp/add" class="grid">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+      <div>
+        <label>Name</label>
+        <input type="text" name="name" placeholder="Name" required>
+      </div>
+      <div>
+        <label>Cell</label>
+        <input type="tel" name="phone" placeholder="+1 (807) 555-1234">
+      </div>
+      <div>
+        <label>Status</label>
+        <select name="status" required>
+          <option value="IN">IN</option>
+          <option value="LATE">LATE</option>
+          <option value="OUT">OUT</option>
+        </select>
+      </div>
+      <div class="row">
+        <button class="btn" type="submit">Add Player</button>
+        <button class="btn secondary" type="button" id="closeAddPlayerModal">Cancel</button>
+      </div>
+    </form>
+  </div>
+</div>
 
 <h2>Standby List</h2>
 {% if standby|length == 0 %}
@@ -157,32 +211,162 @@
     </form>
   </div>
 </div>
+<!-- /.organizer-view -->
 
+<link rel="stylesheet" href="/static/flatpickr.min.css">
+<script src="/static/flatpickr.min.js"></script>
 <script>
-  const csrfToken = {{ csrf_token(request) | tojson }};
-
-  setTimeout(() => { window.location.reload(); }, 30000);
-
   (function() {
+    const flash = document.getElementById('flashSuccess');
+    if (flash) {
+      setTimeout(() => {
+        flash.style.display = 'none';
+      }, 5000);
+      try {
+        const url = new URL(window.location.href);
+        if (url.searchParams.has('success')) {
+          url.searchParams.delete('success');
+          const next = url.pathname + (url.search ? url.search : '') + (url.hash ? url.hash : '');
+          window.history.replaceState({}, '', next);
+        }
+      } catch (e) {}
+    }
+
+    flatpickr('.date-picker', { dateFormat: 'Y-m-d', disableMobile: true });
+    flatpickr('.time-picker', { enableTime: true, noCalendar: true, dateFormat: 'H:i', altInput: true, altFormat: 'h:i K', disableMobile: true });
+
+    const gameId = {{ game['id'] }};
     const activeFilter = document.getElementById('activeFilter');
     const activeFilterValue = document.getElementById('activeFilterValue');
     const sortStatusBtn = document.getElementById('sortStatus');
     const sortNameBtn = document.getElementById('sortName');
     const sortTimeBtn = document.getElementById('sortTime');
     const sortSeatBtn = document.getElementById('sortSeat');
+    const detailsModal = document.getElementById('detailsModal');
+    const openDetailsModalBtn = document.getElementById('openDetailsModal');
+    const closeDetailsModalBtn = document.getElementById('closeDetailsModal');
+    const addPlayerModal = document.getElementById('addPlayerModal');
+    const openAddPlayerModalBtn = document.getElementById('openAddPlayerModal');
+    const closeAddPlayerModalBtn = document.getElementById('closeAddPlayerModal');
+    const detailsForm = document.getElementById('gameDetailsForm');
+    const detailsStatus = document.getElementById('detailsSaveStatus');
+    const detailsLocation = detailsForm ? detailsForm.querySelector('input[name="location"]') : null;
+    const detailsDate = detailsForm ? detailsForm.querySelector('input[name="game_date"]') : null;
+    const detailsTime = detailsForm ? detailsForm.querySelector('input[name="game_time"]') : null;
+    const detailsMultipleTables = detailsForm ? detailsForm.querySelector('input[name="multiple_tables"]') : null;
+    const detailsCsrf = detailsForm ? detailsForm.querySelector('input[name="csrf_token"]') : null;
+    const gameDateTimeEl = document.querySelector('.game-datetime');
+    const gameLocationTextEl = document.getElementById('gameLocationText');
     const tbody = document.querySelector('#rsvpTable tbody');
-    if (!tbody || !activeFilter || !activeFilterValue) return;
+    const playersInBadge = document.getElementById('playersInBadge');
+    const modal = document.getElementById('rsvpModal');
+    const form = document.getElementById('rsvpEditForm');
+    const nameInput = document.getElementById('editName');
+    const statusInput = document.getElementById('editStatus');
+    const etaInput = document.getElementById('editEta');
+    const phoneInput = document.getElementById('editPhone');
+    const closeBtn = document.getElementById('closeModal');
+    if (!tbody || !activeFilter || !activeFilterValue || !playersInBadge) return;
 
     const order = { IN: 0, HOST: 1, LATE: 2, OUT: 3 };
-
+    const csrfToken = {{ csrf_token(request) | tojson }};
     let currentFilter = null;
+    let currentSort = 'status';
+
+    function esc(value) {
+      const s = String(value || '');
+      return s
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function smsPhone(value) {
+      let phone = String(value || '').replace(/[^0-9]/g, '');
+      if (!phone) return '';
+      if (phone.length === 10) return `+1${phone}`;
+      if (phone.length === 11 && phone.startsWith('1')) return `+${phone}`;
+      return '';
+    }
+
+    function updateDetailsMeta() {
+      if (!detailsDate || !detailsTime || !detailsLocation) return;
+      if (gameDateTimeEl) gameDateTimeEl.textContent = `🗓️ ${detailsDate.value} at ${detailsTime.value}`;
+      if (gameLocationTextEl) gameLocationTextEl.textContent = detailsLocation.value;
+    }
+
+    function detailsPayload() {
+      return {
+        location: (detailsLocation?.value || '').trim(),
+        game_date: (detailsDate?.value || '').trim(),
+        game_time: (detailsTime?.value || '').trim(),
+        multiple_tables: detailsMultipleTables && detailsMultipleTables.checked ? '1' : '0',
+      };
+    }
+
+    let lastDetailsSaved = JSON.stringify(detailsPayload());
+    let detailsSaving = false;
+    function showDetailsStatus(text) {
+      if (!detailsStatus) return;
+      detailsStatus.textContent = text;
+      detailsStatus.style.display = 'inline-flex';
+    }
+    function hideDetailsStatus() {
+      if (!detailsStatus) return;
+      detailsStatus.style.display = 'none';
+      detailsStatus.textContent = '';
+    }
+
+    async function saveDetailsOnChange() {
+      if (!detailsForm || !detailsCsrf) return;
+      const payload = detailsPayload();
+      const signature = JSON.stringify(payload);
+      if (signature === lastDetailsSaved || detailsSaving) return;
+      detailsSaving = true;
+      showDetailsStatus('Saving...');
+      try {
+        const body = new URLSearchParams();
+        body.set('csrf_token', detailsCsrf.value || '');
+        body.set('location', payload.location);
+        body.set('game_date', payload.game_date);
+        body.set('game_time', payload.game_time);
+        body.set('multiple_tables', payload.multiple_tables);
+        const response = await fetch(`/games/${gameId}/details/update`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: body.toString(),
+        });
+        const redirectedToError = response.redirected && response.url.includes('error=');
+        if (response.ok && !redirectedToError) {
+          lastDetailsSaved = signature;
+          updateDetailsMeta();
+          showDetailsStatus('Saved');
+          setTimeout(() => {
+            if (detailsStatus && detailsStatus.textContent === 'Saved') hideDetailsStatus();
+          }, 3000);
+        } else {
+          showDetailsStatus('Save failed');
+          setTimeout(() => {
+            if (detailsStatus && detailsStatus.textContent === 'Save failed') hideDetailsStatus();
+          }, 4000);
+        }
+      } catch (e) {
+        showDetailsStatus('Save failed');
+        setTimeout(() => {
+          if (detailsStatus && detailsStatus.textContent === 'Save failed') hideDetailsStatus();
+        }, 4000);
+      } finally {
+        detailsSaving = false;
+      }
+    }
+
     function applyFilter() {
       const value = currentFilter;
       tbody.querySelectorAll('tr').forEach(tr => {
         const status = (tr.getAttribute('data-status') || '').trim().toUpperCase();
-        const show = !value
-          || status === value
-          || (value === 'IN' && status === 'HOST');
+        const show = !value || status === value || (value === 'IN' && status === 'HOST');
         tr.style.display = show ? '' : 'none';
       });
       if (value) {
@@ -239,32 +423,155 @@
       rows.forEach(r => tbody.appendChild(r));
     }
 
+    function applySort() {
+      if (currentSort === 'name') sortByName();
+      else if (currentSort === 'time') sortByTime();
+      else if (currentSort === 'seat') sortBySeat();
+      else sortByStatus();
+    }
+
+    function renderRows(rsvps) {
+      const html = (rsvps || []).map(r => {
+        const seatNumber = r.seat_number == null ? '' : String(r.seat_number);
+        const seatLabel = r.seat_label || '-';
+        const lateEta = r.late_eta || '-';
+        const phoneFmt = r.phone_fmt || '-';
+        const createdAtFmt = r.created_at_fmt || '';
+        const hasPhone = !!r.phone;
+        const textCell = hasPhone
+          ? `<button class="btn secondary text-btn" type="button" data-rsvp-id="${esc(r.id)}" data-phone="${esc(r.phone)}" data-seat-label="${esc(seatLabel)}">Text</button>`
+          : `<span class="badge">-</span>`;
+        return `<tr data-status="${esc(r.status)}">
+          <td data-label="Name" title="${esc(r.name)}">${esc(r.name)}</td>
+          <td class="hide-mobile" data-label="Cell">${esc(phoneFmt)}</td>
+          <td data-label="Seat" data-seat-number="${esc(seatNumber)}">${esc(seatLabel)}</td>
+          <td data-label="Status">${esc(r.status)}</td>
+          <td data-label="ETA">${esc(lateEta)}</td>
+          <td class="hide-mobile" data-label="Time">${esc(createdAtFmt)}</td>
+          <td class="hide-mobile" data-label="Edit">
+            <button class="btn secondary edit-rsvp-btn edit-btn" type="button"
+              data-id="${esc(r.id)}"
+              data-name="${esc(r.name)}"
+              data-status="${esc(r.status)}"
+              data-eta="${esc(r.late_eta || '')}"
+              data-phone="${esc(r.phone || '')}">
+              Edit
+            </button>
+          </td>
+          <td data-label="Text">${textCell}</td>
+        </tr>`;
+      }).join('');
+      tbody.innerHTML = html;
+      applySort();
+      applyFilter();
+    }
+
+    async function fetchSnapshotAndRender() {
+      try {
+        const response = await fetch(`/games/${gameId}/snapshot`, { headers: { Accept: 'application/json' } });
+        if (!response.ok) return;
+        const data = await response.json();
+        playersInBadge.textContent = `Players IN: ${data.in_count} / ${data.total_players}`;
+        renderRows(data.rsvps || []);
+      } catch (e) {
+        // Ignore transient errors; EventSource will trigger future refreshes.
+      }
+    }
+
+    function inviteText(seatLabel) {
+      const link = "https://{{ request.headers.get('host') }}/game?g={{ game['code'] }}";
+      const seatLine = seatLabel ? `\nSeat: ${seatLabel}` : '';
+      const title = {{ game['title'] | tojson }};
+      const location = {{ game['location'] | tojson }};
+      const dateRaw = "{{ game['game_date'] }}";
+      let dateWithDay = dateRaw;
+      const parsed = new Date(`${dateRaw}T00:00:00`);
+      if (!Number.isNaN(parsed.getTime())) {
+        const shortDay = parsed.toLocaleDateString('en-US', { weekday: 'short' });
+        dateWithDay = `${shortDay} ${dateRaw}`;
+      }
+      return `${title}\nWhen: ${dateWithDay} at {{ game['game_time'] | fmt_game_time }}\nWhere: ${location}` + seatLine + `\n` + link;
+    }
+
+    async function sendTextViaTwilio(rsvpId, buttonEl) {
+      if (!rsvpId) return false;
+      const body = new URLSearchParams();
+      body.set('csrf_token', csrfToken || '');
+      try {
+        if (buttonEl) buttonEl.disabled = true;
+        const response = await fetch(`/games/${gameId}/rsvp/${rsvpId}/text`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: body.toString(),
+        });
+        if (!response.ok) return false;
+        if (buttonEl) {
+          buttonEl.textContent = 'Sent!';
+          setTimeout(() => { buttonEl.textContent = 'Text'; }, 1500);
+        }
+        return true;
+      } catch (e) {
+        return false;
+      } finally {
+        if (buttonEl) buttonEl.disabled = false;
+      }
+    }
+
+    function sendTextViaDevice(phoneRaw, seatLabel) {
+      const phone = smsPhone(phoneRaw || '');
+      if (!phone) return;
+      const body = encodeURIComponent(inviteText(seatLabel || ''));
+      window.location.href = `sms:${phone}?body=${body}`;
+    }
+
     sortStatusBtn && sortStatusBtn.addEventListener('click', () => {
-      sortByStatus();
+      currentSort = 'status';
+      applySort();
       applyFilter();
     });
-
     sortNameBtn && sortNameBtn.addEventListener('click', () => {
-      sortByName();
+      currentSort = 'name';
+      applySort();
       applyFilter();
     });
-
     sortTimeBtn && sortTimeBtn.addEventListener('click', () => {
-      sortByTime();
+      currentSort = 'time';
+      applySort();
       applyFilter();
     });
-
     sortSeatBtn && sortSeatBtn.addEventListener('click', () => {
-      sortBySeat();
+      currentSort = 'seat';
+      applySort();
       applyFilter();
     });
-
     activeFilter.addEventListener('click', () => {
       currentFilter = null;
       applyFilter();
     });
+    tbody.addEventListener('click', async (e) => {
+      const textBtn = e.target.closest('.text-btn');
+      if (textBtn) {
+        const rsvpId = textBtn.getAttribute('data-rsvp-id') || '';
+        const phoneRaw = textBtn.getAttribute('data-phone') || '';
+        const seatLabel = textBtn.getAttribute('data-seat-label') || '';
+        const sent = await sendTextViaTwilio(rsvpId, textBtn);
+        if (!sent) sendTextViaDevice(phoneRaw, seatLabel);
+        return;
+      }
 
-    tbody.addEventListener('click', (e) => {
+      const editBtn = e.target.closest('.edit-rsvp-btn');
+      if (editBtn) {
+        const id = editBtn.getAttribute('data-id');
+        nameInput.value = editBtn.getAttribute('data-name') || '';
+        statusInput.value = editBtn.getAttribute('data-status') || 'IN';
+        etaInput.value = editBtn.getAttribute('data-eta') || '';
+        phoneInput.value = editBtn.getAttribute('data-phone') || '';
+        form.action = `/games/{{ game['id'] }}/rsvp/${id}/update`;
+        modal.style.display = 'flex';
+        return;
+      }
+
+      if (e.target.closest('button, a, input, select, form')) return;
       const row = e.target.closest('tr');
       if (!row) return;
       const status = row.getAttribute('data-status');
@@ -272,117 +579,105 @@
       currentFilter = (currentFilter === status) ? null : status;
       applyFilter();
     });
-
-    // Default organizer view: keep IN at the top.
-    sortByStatus();
-    applyFilter();
-  })();
-
-  (function() {
-    const btn = document.querySelector('.copy-btn');
-    if (!btn) return;
-    btn.addEventListener('click', async () => {
-      const link = btn.getAttribute('data-link');
-      try {
-        await navigator.clipboard.writeText(link);
-        btn.textContent = 'Copied!';
-        setTimeout(() => { btn.textContent = 'Copy Invite Link'; }, 1500);
-      } catch (e) {
-        prompt('Copy this link:', link);
-      }
-    });
-  })();
-
-  function inviteText(seatLabel) {
-    const link = "https://{{ request.headers.get('host') }}/game?g={{ game['code'] }}";
-    const seatLine = seatLabel ? `\nSeat: ${seatLabel}` : '';
-    const title = {{ game['title'] | tojson }};
-    const location = {{ game['location'] | tojson }};
-    return `Poker game: ${title}\nWhen: {{ game['game_date'] }} at {{ game['game_time'] }}\nWhere: ${location}` + seatLine + `\nUPDATE/RSVP: ` + link;
-  }
-
-  async function sendTextViaTwilio(rsvpId, buttonEl) {
-    if (!rsvpId) return false;
-    const body = new URLSearchParams();
-    body.set('csrf_token', csrfToken || '');
-    try {
-      if (buttonEl) buttonEl.disabled = true;
-      const response = await fetch(`/games/{{ game['id'] }}/rsvp/${rsvpId}/text`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: body.toString(),
-      });
-      if (!response.ok) return false;
-      if (buttonEl) {
-        buttonEl.textContent = 'Sent!';
-        setTimeout(() => { buttonEl.textContent = 'Text'; }, 1500);
-      }
-      return true;
-    } catch (e) {
-      return false;
-    } finally {
-      if (buttonEl) buttonEl.disabled = false;
-    }
-  }
-
-  (function() {
-    const btn = document.querySelector('.copy-text-btn');
-    if (!btn) return;
-    btn.addEventListener('click', async () => {
-      const text = inviteText('');
-      try {
-        await navigator.clipboard.writeText(text);
-        btn.textContent = 'Copied!';
-        setTimeout(() => { btn.textContent = 'Copy Invite Text'; }, 1500);
-      } catch (e) {
-        prompt('Copy this text:', text);
-      }
-    });
-  })();
-
-  (function() {
-    document.querySelectorAll('.text-btn').forEach(btn => {
-      btn.addEventListener('click', async () => {
-        const rsvpId = btn.getAttribute('data-rsvp-id') || '';
-        const sent = await sendTextViaTwilio(rsvpId, btn);
-        if (sent) return;
-        const raw = btn.getAttribute('data-phone') || '';
-        let phone = raw.replace(/[^0-9]/g, '');
-        if (!phone) return;
-        if (phone.length === 10) {
-          phone = `+1${phone}`;
-        } else if (phone.length === 11 && phone.startsWith('1')) {
-          phone = `+${phone}`;
-        }
-        const seatLabel = btn.getAttribute('data-seat-label') || '';
-        const body = encodeURIComponent(inviteText(seatLabel));
-        window.location.href = `sms:${phone}?body=${body}`;
-      });
-    });
-  })();
-
-  (function() {
-    const modal = document.getElementById('rsvpModal');
-    const form = document.getElementById('rsvpEditForm');
-    const nameInput = document.getElementById('editName');
-    const statusInput = document.getElementById('editStatus');
-    const etaInput = document.getElementById('editEta');
-    const phoneInput = document.getElementById('editPhone');
-    const closeBtn = document.getElementById('closeModal');
-    document.querySelectorAll('.edit-rsvp-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const id = btn.getAttribute('data-id');
-        nameInput.value = btn.getAttribute('data-name') || '';
-        statusInput.value = btn.getAttribute('data-status') || 'IN';
-        etaInput.value = btn.getAttribute('data-eta') || '';
-        phoneInput.value = btn.getAttribute('data-phone') || '';
-        form.action = `/games/{{ game['id'] }}/rsvp/${id}/update`;
-        modal.style.display = 'flex';
-      });
-    });
     closeBtn.addEventListener('click', () => { modal.style.display = 'none'; });
     modal.addEventListener('click', (e) => {
       if (e.target === modal) modal.style.display = 'none';
+    });
+
+    detailsForm && detailsForm.addEventListener('submit', (e) => e.preventDefault());
+    openDetailsModalBtn && openDetailsModalBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      if (detailsModal) detailsModal.style.display = 'flex';
+    });
+    closeDetailsModalBtn && closeDetailsModalBtn.addEventListener('click', () => {
+      if (detailsModal) detailsModal.style.display = 'none';
+    });
+    detailsModal && detailsModal.addEventListener('click', (e) => {
+      if (e.target === detailsModal) detailsModal.style.display = 'none';
+    });
+    openAddPlayerModalBtn && openAddPlayerModalBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      if (addPlayerModal) addPlayerModal.style.display = 'flex';
+    });
+    closeAddPlayerModalBtn && closeAddPlayerModalBtn.addEventListener('click', () => {
+      if (addPlayerModal) addPlayerModal.style.display = 'none';
+    });
+    addPlayerModal && addPlayerModal.addEventListener('click', (e) => {
+      if (e.target === addPlayerModal) addPlayerModal.style.display = 'none';
+    });
+    detailsLocation && detailsLocation.addEventListener('change', saveDetailsOnChange);
+    detailsLocation && detailsLocation.addEventListener('blur', saveDetailsOnChange);
+    detailsDate && detailsDate.addEventListener('change', saveDetailsOnChange);
+    detailsTime && detailsTime.addEventListener('change', saveDetailsOnChange);
+    detailsMultipleTables && detailsMultipleTables.addEventListener('change', saveDetailsOnChange);
+
+    const copyBtn = document.querySelector('.copy-btn');
+    if (copyBtn) {
+      copyBtn.addEventListener('click', async () => {
+        const link = copyBtn.getAttribute('data-link') || '';
+        try {
+          await navigator.clipboard.writeText(link);
+          copyBtn.textContent = 'Copied!';
+          setTimeout(() => { copyBtn.textContent = 'Copy Invite Link'; }, 1500);
+        } catch (e) {
+          prompt('Copy this link:', link);
+        }
+      });
+    }
+
+    const copyTextBtn = document.querySelector('.copy-text-btn');
+    if (copyTextBtn) {
+      copyTextBtn.addEventListener('click', async () => {
+        const text = inviteText('');
+        try {
+          await navigator.clipboard.writeText(text);
+          copyTextBtn.textContent = 'Copied!';
+          setTimeout(() => { copyTextBtn.textContent = 'Copy Invite Text'; }, 1500);
+        } catch (e) {
+          prompt('Copy this text:', text);
+        }
+      });
+    }
+
+    applySort();
+    applyFilter();
+    fetchSnapshotAndRender();
+
+    const pollMs = 15000;
+    const reconnectMs = 3000;
+    let events = null;
+    let reconnectTimer = null;
+
+    function onRefreshEvent() {
+      fetchSnapshotAndRender();
+    }
+
+    function connectEvents() {
+      if (events) events.close();
+      events = new EventSource(`/games/${gameId}/events`);
+      events.addEventListener('refresh', onRefreshEvent);
+      events.onmessage = onRefreshEvent;
+      events.onerror = () => {
+        if (events) {
+          events.close();
+          events = null;
+        }
+        if (!reconnectTimer) {
+          reconnectTimer = setTimeout(() => {
+            reconnectTimer = null;
+            connectEvents();
+          }, reconnectMs);
+        }
+      };
+    }
+
+    const fallbackPoll = setInterval(fetchSnapshotAndRender, pollMs);
+    connectEvents();
+
+    window.addEventListener('beforeunload', () => {
+      clearInterval(fallbackPoll);
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (events) events.close();
     });
   })();
 </script>

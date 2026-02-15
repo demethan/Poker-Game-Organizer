@@ -1,7 +1,10 @@
 {% extends "base.html" %}
 {% block content %}
 <h1>{{ game['title'] }}</h1>
-<p>{{ game['game_date'] }} at {{ game['game_time'] }} • {{ game['location'] }}</p>
+{% if request.query_params.get("error") %}
+  <div class="error" id="inviteFullFlashError">{{ request.query_params.get("error") }}</div>
+{% endif %}
+<p>{{ game['game_date'] }} at {{ game['game_time'] | fmt_game_time }} • {{ game['location'] }}</p>
 <div class="card">
   <h2>GAME FULL</h2>
   <p id="standbyIntro">You can join the standby list.</p>
@@ -11,31 +14,94 @@
   </div>
   <form method="post" action="/g/{{ game['code'] }}/standby" id="standbyForm" class="grid grid-2">
     <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <input type="hidden" name="verification_code" id="standbyVerificationCodeHidden" value="">
     <div class="standby-field">
       <label>Name</label>
       <input type="text" name="name" id="standbyName" required>
     </div>
     <div class="standby-field">
-      <label>Cell (optional)</label>
-      <input type="tel" name="phone" id="standbyPhone" disabled placeholder="Coming soon">
+      <label>Cell (optional) <span id="standbyPhoneVerifyBadge" class="badge" style="margin-left:6px; display:none;"></span></label>
+      <input type="tel" name="phone" id="standbyPhone" placeholder="+1 (807) 555-1234">
     </div>
     <div class="form-actions standby-field">
       <button class="btn" type="submit">Add me to standby list</button>
     </div>
   </form>
 </div>
+{% if twilio_enabled %}
+<div id="standbyVerifyModal" class="modal" style="{% if verify_required %}display:flex;{% else %}display:none;{% endif %}">
+  <div class="modal-card">
+    <h3>Verify Your Phone</h3>
+    <p style="margin-bottom:10px;">Enter the 6-digit code sent by text.</p>
+    <input type="text" id="standbyVerificationCodeInput" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="6-digit code">
+    <div class="row" style="margin-top:12px;">
+      <button class="btn" type="button" onclick="applyStandbyVerifyCode()">Continue</button>
+      <button class="btn secondary" type="button" onclick="closeStandbyVerifyModal()">Close</button>
+    </div>
+  </div>
+</div>
+{% endif %}
 
 <script>
 (function() {
-  const nameInput = document.getElementById('standbyName');
-  const savedName = localStorage.getItem('poker_name');
-  if (savedName) nameInput.value = savedName;
+  const flash = document.getElementById('inviteFullFlashError');
+  if (!flash) return;
+  setTimeout(() => { flash.style.display = 'none'; }, 5000);
+  try {
+    const url = new URL(window.location.href);
+    if (url.searchParams.has('error')) {
+      url.searchParams.delete('error');
+      const next = url.pathname + (url.search ? url.search : '') + (url.hash ? url.hash : '');
+      window.history.replaceState({}, '', next);
+    }
+  } catch (e) {}
 })();
 
-document.getElementById('standbyForm').addEventListener('submit', function() {
+(function() {
   const nameInput = document.getElementById('standbyName');
+  const phoneInput = document.getElementById('standbyPhone');
+  const verifyBadge = document.getElementById('standbyPhoneVerifyBadge');
+  const savedName = localStorage.getItem('poker_name');
+  const savedPhone = localStorage.getItem('poker_phone');
+  if (savedName) nameInput.value = savedName;
+  if (savedPhone && phoneInput) phoneInput.value = savedPhone;
+
+  function updateStandbyPhoneVerifyBadge() {
+    if (!verifyBadge || !phoneInput) return;
+    const hasPhone = !!(phoneInput.value || '').trim();
+    if (!hasPhone) {
+      verifyBadge.style.display = 'none';
+      verifyBadge.textContent = '';
+      return;
+    }
+    const verifyRequired = {{ verify_required | tojson }};
+    verifyBadge.style.display = 'inline-flex';
+    if (verifyRequired) {
+      verifyBadge.textContent = 'Not verified';
+    } else {
+      verifyBadge.textContent = '✓ Verified';
+    }
+  }
+  phoneInput && phoneInput.addEventListener('input', updateStandbyPhoneVerifyBadge);
+  updateStandbyPhoneVerifyBadge();
+})();
+
+document.getElementById('standbyForm').addEventListener('submit', function(event) {
+  const nameInput = document.getElementById('standbyName');
+  const phoneInput = document.getElementById('standbyPhone');
+  const verifyModal = document.getElementById('standbyVerifyModal');
+  const verifyHidden = document.getElementById('standbyVerificationCodeHidden');
   if (nameInput.value.trim()) {
     localStorage.setItem('poker_name', nameInput.value.trim());
+  }
+  localStorage.setItem('poker_phone', (phoneInput?.value || '').trim());
+  const verifyRequired = {{ verify_required | tojson }};
+  if (verifyRequired && verifyModal && (phoneInput?.value || '').trim()) {
+    if (!((verifyHidden?.value || '').trim())) {
+      openStandbyVerifyModal();
+      event.preventDefault();
+      return;
+    }
   }
   localStorage.setItem('poker_standby_{{ game["code"] }}', '1');
 });
@@ -56,5 +122,35 @@ document.getElementById('standbyForm').addEventListener('submit', function() {
     });
   }
 })();
+
+function openStandbyVerifyModal() {
+  const modal = document.getElementById('standbyVerifyModal');
+  const input = document.getElementById('standbyVerificationCodeInput');
+  if (!modal) return;
+  modal.style.display = 'flex';
+  if (input) {
+    input.value = document.getElementById('standbyVerificationCodeHidden')?.value || '';
+    input.focus();
+  }
+}
+
+function closeStandbyVerifyModal() {
+  const modal = document.getElementById('standbyVerifyModal');
+  if (!modal) return;
+  modal.style.display = 'none';
+}
+
+function applyStandbyVerifyCode() {
+  const input = document.getElementById('standbyVerificationCodeInput');
+  const hidden = document.getElementById('standbyVerificationCodeHidden');
+  const code = (input?.value || '').trim();
+  if (!code) {
+    input && input.focus();
+    return;
+  }
+  if (hidden) hidden.value = code;
+  closeStandbyVerifyModal();
+  document.getElementById('standbyForm').submit();
+}
 </script>
 {% endblock %}

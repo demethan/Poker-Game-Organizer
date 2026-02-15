@@ -12,7 +12,7 @@
   {% for game in games %}
   <div class="card">
     <h3>{{ game['title'] }}</h3>
-    <p>{{ game['game_date'] }} at {{ game['game_time'] }} • {{ game['location'] }}</p>
+    <p>{{ game['game_date'] }} at {{ game['game_time'] | fmt_game_time }} • {{ game['location'] }}</p>
     <div class="row">
       <span class="badge">Total Players: {{ game['total_players'] }}</span>
       <span class="badge">Code: {{ game['code'] }}</span>
@@ -20,8 +20,22 @@
     </div>
     <div class="row" style="margin-top: 12px;">
       <a class="btn secondary" href="/games/{{ game['id'] }}">View</a>
-      <button class="btn secondary copy-btn" type="button" data-link="https://{{ request.headers.get('host') }}/game?g={{ game['code'] }}">Copy Invite Link</button>
+      <button
+        class="btn secondary copy-btn"
+        type="button"
+        data-link="https://{{ request.headers.get('host') }}/game?g={{ game['code'] }}"
+        data-title="{{ game['title'] }}"
+        data-date="{{ game['game_date'] }}"
+        data-time="{{ game['game_time'] | fmt_game_time }}"
+        data-location="{{ game['location'] }}"
+      >Copy Invite Link</button>
+      <button class="btn secondary copy-host-btn" type="button" data-link="https://{{ request.headers.get('host') }}/h/{{ game['host_code'] }}">Copy Host Link</button>
       <span class="badge">Invite Link: /game?g={{ game['code'] }}</span>
+      <span class="badge">Host Link: /h/{{ game['host_code'] }}</span>
+      <form method="post" action="/games/{{ game['id'] }}/delete" onsubmit="return confirm('Delete this game and all RSVPs?');" style="margin-left:auto;">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+        <button class="btn danger" type="submit">Delete Game</button>
+      </form>
     </div>
   </div>
   {% endfor %}
@@ -39,6 +53,20 @@
           setTimeout(() => { btn.textContent = 'Copy Invite Link'; }, 1500);
         } catch (e) {
           prompt('Copy this link:', link);
+        }
+      });
+    });
+
+    const hostButtons = document.querySelectorAll('.copy-host-btn');
+    hostButtons.forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const link = btn.getAttribute('data-link');
+        try {
+          await navigator.clipboard.writeText(link);
+          btn.textContent = 'Copied!';
+          setTimeout(() => { btn.textContent = 'Copy Host Link'; }, 1500);
+        } catch (e) {
+          prompt('Copy this host link:', link);
         }
       });
     });

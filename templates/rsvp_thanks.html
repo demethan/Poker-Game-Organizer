@@ -12,7 +12,7 @@
     <p>Your seat number: <strong>#{{ seat_number }}</strong></p>
   {% endif %}
 {% endif %}
-<p>{{ game['title'] }} • {{ game['game_date'] }} at {{ game['game_time'] }}</p>
+<p>{{ game['title'] }} • {{ game['game_date'] }} at {{ game['game_time'] | fmt_game_time }}</p>
 <script>
   localStorage.setItem('poker_rsvp_{{ game["code"] }}', '{{ status }}');
 </script>
