@@ -1,15 +1,20 @@
 from __future__ import annotations
 
+import json
 import os
 import secrets
 import sqlite3
 import time
+import base64
+import urllib.error
+import urllib.parse
+import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, PlainTextResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from passlib.context import CryptContext
@@ -432,6 +437,90 @@ def normalize_phone_10(value: Optional[str]) -> Optional[str]:
     return digits
 
 
+def twilio_config() -> dict:
+    return {
+        "account_sid": (os.getenv("TWILIO_ACCOUNT_SID") or "").strip(),
+        "auth_token": (os.getenv("TWILIO_AUTH_TOKEN") or "").strip(),
+        "from_number": (os.getenv("TWILIO_FROM_NUMBER") or "").strip(),
+        "messaging_service_sid": (os.getenv("TWILIO_MESSAGING_SERVICE_SID") or "").strip(),
+    }
+
+
+def twilio_enabled() -> bool:
+    cfg = twilio_config()
+    has_sender = bool(cfg["messaging_service_sid"] or cfg["from_number"])
+    return bool(cfg["account_sid"] and cfg["auth_token"] and has_sender)
+
+
+def invite_link(request: Request, code: str) -> str:
+    proto = (request.headers.get("x-forwarded-proto") or request.url.scheme or "https").split(",")[0].strip() or "https"
+    host = (
+        (request.headers.get("x-forwarded-host") or "").split(",")[0].strip()
+        or (request.headers.get("host") or "").strip()
+        or request.url.netloc
+    )
+    return f"{proto}://{host}/game?g={code}"
+
+
+def build_invite_sms_text(request: Request, game_row, seat_label: Optional[str]) -> str:
+    lines = [
+        str(game_row["title"]),
+        f"When: {game_row['game_date']} at {game_row['game_time']}",
+        f"Where: {game_row['location']}",
+    ]
+    if seat_label:
+        lines.append(f"Seat: {seat_label}")
+    lines.append(invite_link(request, game_row["code"]))
+    return "\n".join(lines)
+
+
+def send_twilio_sms(to_phone_10: str, body: str) -> tuple[bool, str]:
+    cfg = twilio_config()
+    if not twilio_enabled():
+        return False, "Twilio is not configured"
+    if len(to_phone_10) != 10 or not to_phone_10.isdigit():
+        return False, "Invalid destination phone"
+
+    to_number = f"+1{to_phone_10}"
+    form_data = {
+        "To": to_number,
+        "Body": body,
+    }
+    if cfg["messaging_service_sid"]:
+        form_data["MessagingServiceSid"] = cfg["messaging_service_sid"]
+    else:
+        form_data["From"] = cfg["from_number"]
+    payload = urllib.parse.urlencode(form_data).encode("utf-8")
+    auth_value = f"{cfg['account_sid']}:{cfg['auth_token']}".encode("utf-8")
+    auth_header = "Basic " + base64.b64encode(auth_value).decode("ascii")
+    url = f"https://api.twilio.com/2010-04-01/Accounts/{cfg['account_sid']}/Messages.json"
+    req = urllib.request.Request(
+        url,
+        data=payload,
+        method="POST",
+        headers={
+            "Authorization": auth_header,
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            raw = resp.read().decode("utf-8")
+            data = json.loads(raw) if raw else {}
+            sid = data.get("sid") if isinstance(data, dict) else None
+            return True, sid or "unknown"
+    except urllib.error.HTTPError as e:
+        try:
+            raw = e.read().decode("utf-8")
+            data = json.loads(raw) if raw else {}
+            message = data.get("message") if isinstance(data, dict) else None
+        except Exception:
+            message = None
+        return False, message or str(e)
+    except Exception as e:
+        return False, str(e)
+
+
 def cleanup_old_games(conn: sqlite3.Connection, organizer_id: int) -> None:
     cutoff = (datetime.utcnow() - timedelta(days=365)).isoformat()
     cur = conn.cursor()
@@ -831,6 +920,42 @@ def view_game(request: Request, game_id: int):
             "success": request.query_params.get("success"),
         },
     )
+
+
+@app.post("/games/{game_id}/rsvp/{rsvp_id}/text")
+def organizer_send_text(request: Request, game_id: int, rsvp_id: int, csrf_token: str = Form(...)):
+    user_id = require_login(request)
+    if not user_id:
+        return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
+    if not verify_csrf(request, csrf_token):
+        return JSONResponse({"ok": False, "error": "Bad CSRF token"}, status_code=400)
+
+    conn = get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM games WHERE id = ? AND organizer_id = ?", (game_id, user_id))
+        game = cur.fetchone()
+        if not game:
+            return JSONResponse({"ok": False, "error": "Game not found"}, status_code=404)
+
+        cur.execute("SELECT * FROM rsvps WHERE id = ? AND game_id = ?", (rsvp_id, game_id))
+        rsvp = cur.fetchone()
+        if not rsvp:
+            return JSONResponse({"ok": False, "error": "RSVP not found"}, status_code=404)
+        if not rsvp["phone"]:
+            return JSONResponse({"ok": False, "error": "No phone number"}, status_code=400)
+
+        seat_label = seat_display(rsvp["seat_number"], game["total_players"])
+        message = build_invite_sms_text(request, game, seat_label)
+        sent, result = send_twilio_sms(rsvp["phone"], message)
+        if not sent:
+            return JSONResponse(
+                {"ok": False, "provider": "twilio", "error": result},
+                status_code=503,
+            )
+        return JSONResponse({"ok": True, "provider": "twilio", "message_sid": result})
+    finally:
+        conn.close()
 
 
 @app.post("/games/{game_id}/delete")

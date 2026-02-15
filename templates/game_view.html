@@ -71,7 +71,7 @@
       </td>
       <td data-label="Text">
         {% if r['phone'] %}
-          <button class="btn secondary text-btn" type="button" data-phone="{{ r['phone'] }}" data-seat-label="{{ r['seat_label'] or '' }}">Text</button>
+          <button class="btn secondary text-btn" type="button" data-rsvp-id="{{ r['id'] }}" data-phone="{{ r['phone'] }}" data-seat-label="{{ r['seat_label'] or '' }}">Text</button>
         {% else %}
           <span class="badge">—</span>
         {% endif %}
@@ -159,6 +159,8 @@
 </div>
 
 <script>
+  const csrfToken = {{ csrf_token(request) | tojson }};
+
   setTimeout(() => { window.location.reload(); }, 30000);
 
   (function() {
@@ -299,6 +301,30 @@
     return `Poker game: ${title}\nWhen: {{ game['game_date'] }} at {{ game['game_time'] }}\nWhere: ${location}` + seatLine + `\nUPDATE/RSVP: ` + link;
   }
 
+  async function sendTextViaTwilio(rsvpId, buttonEl) {
+    if (!rsvpId) return false;
+    const body = new URLSearchParams();
+    body.set('csrf_token', csrfToken || '');
+    try {
+      if (buttonEl) buttonEl.disabled = true;
+      const response = await fetch(`/games/{{ game['id'] }}/rsvp/${rsvpId}/text`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: body.toString(),
+      });
+      if (!response.ok) return false;
+      if (buttonEl) {
+        buttonEl.textContent = 'Sent!';
+        setTimeout(() => { buttonEl.textContent = 'Text'; }, 1500);
+      }
+      return true;
+    } catch (e) {
+      return false;
+    } finally {
+      if (buttonEl) buttonEl.disabled = false;
+    }
+  }
+
   (function() {
     const btn = document.querySelector('.copy-text-btn');
     if (!btn) return;
@@ -316,7 +342,10 @@
 
   (function() {
     document.querySelectorAll('.text-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
+      btn.addEventListener('click', async () => {
+        const rsvpId = btn.getAttribute('data-rsvp-id') || '';
+        const sent = await sendTextViaTwilio(rsvpId, btn);
+        if (sent) return;
         const raw = btn.getAttribute('data-phone') || '';
         let phone = raw.replace(/[^0-9]/g, '');
         if (!phone) return;
